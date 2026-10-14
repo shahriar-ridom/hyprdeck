@@ -63,7 +63,7 @@ jobs:
           # Rename to standard versioned output
           mv Hyprdeck-*.AppImage "hyprdeck-v${{ steps.get_version.outputs.VERSION }}-x86_64.AppImage"
 
-        # 5. Build Arch Linux Package (.pkg.tar.zst) inside Arch Docker Container
+          # 5. Build Arch Linux Package (.pkg.tar.zst) inside Arch Docker Container
       - name: Build Arch Package
         uses: docker://archlinux:latest
         with:
@@ -74,12 +74,15 @@ jobs:
             chown -R builder:builder . &&
             echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers &&
             su builder -c 'cd packaging/arch && makepkg -d -f' &&
-            mv packaging/arch/*.pkg.tar.zst ./
+            mv packaging/arch/*.pkg.tar.zst ./ &&
+            chmod -R 777 .
             "
 
-      # 6. Generate SHA-256 Checksums
+      # 6. Reclaim file ownership and generate SHA-256 Checksums
       - name: Generate Checksums
-        run: sha256sum *.deb *.pkg.tar.zst *.tar.gz *.AppImage > checksums.txt
+        run: |
+          sudo chown -R $USER:$USER .
+          sha256sum *.deb *.pkg.tar.zst *.tar.gz *.AppImage > checksums.txt
 
       # 7. Publish to GitHub Releases
       - name: Publish GitHub Release
