@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build & Package Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Tag Version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # 1. Compile Release Binary
+      - name: Compile Release Binary
+        run: cargo build --release --locked
+
+      # 2. Build Debian Package (.deb)
+      - name: Build Debian Package
+        run: |
+          cargo install cargo-deb
+          cargo deb --no-build
+          mv target/debian/*.deb ./
+
+      # 3. Build Generic Tarball (.tar.gz)
+      - name: Build Generic Tarball
+        run: |
+          mkdir -p staging
+          cp target/release/hyprdeck staging/
+          cp README.md LICENSE staging/ 2>/dev/null || true
+          tar -czvf "hyprdeck-v${{ steps.get_version.outputs.VERSION }}-x86_64-unknown-linux-gnu.tar.gz" -C staging .
+
+      # 4. Build AppImage via linuxdeploy
+      - name: Build AppImage
+        run: |
+          # Download linuxdeploy
+          curl -LO https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+
+          # Prepare an AppDir structure
+          mkdir -p AppDir/usr/bin
+          cp target/release/hyprdeck AppDir/usr/bin/
+
+          # Build AppImage with desktop entry and icon
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            -d assets/hyprdeck.desktop \
+            -i assets/hyprdeck.png \
+            --output appimage
+
+          # Rename to standard versioned output
+          mv Hyprdeck-*.AppImage "hyprdeck-v${{ steps.get_version.outputs.VERSION }}-x86_64.AppImage"
+
+      # 5. Build Arch Linux Package (.pkg.tar.zst) inside Arch Docker Container
+      - name: Build Arch Package
+        uses: docker://archlinux:latest
+        with:
+          args: >
+            bash -c "
+            pacman -Syu --noconfirm base-devel zstd git sudo &&
+            useradd -m builder &&
+            chown -R builder:builder . &&
+            echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers &&
+            su builder -c 'cd packaging/arch && makepkg -f' &&
+            mv packaging/arch/*.pkg.tar.zst ./
+            "
+
+      # 6. Generate SHA-256 Checksums
+      - name: Generate Checksums
+        run: sha256sum *.deb *.pkg.tar.zst *.tar.gz *.AppImage > checksums.txt
+
+      # 7. Publish to GitHub Releases
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.deb
+            *.pkg.tar.zst
+            *.tar.gz
+            *.AppImage
+            checksums.txt
+          generate_release_notes: true
