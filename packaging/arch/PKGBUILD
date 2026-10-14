@@ -1,0 +1,28 @@
+# Maintainer: Shahriar <info@ridom.dev>
+pkgname=hyprdeck-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A fast, native TUI profile and dotfile manager for Hyprland"
+arch=('x86_64')
+url="https://github.com/shahriar-ridom/hyprdeck"
+license=('MIT')
+depends=('gcc-libs' 'glibc')
+optdepends=(
+    'hyprland: Core Wayland compositor'
+    'noctalia: Noctalia shell/bar'
+    'quickshell: Quickshell ecosystem bar runner'
+    'kitty: Supported terminal'
+    'python-pywal: Dynamic terminal color changer'
+)
+
+build() {
+    cd "$startdir/../.."
+    cargo build --release
+}
+
+package() {
+    install -Dm755 "$startdir/../../target/release/hyprdeck" "$pkgdir/usr/bin/hyprdeck"
+    install -Dm644 "$startdir/../../assets/hyprdeck.desktop" "$pkgdir/usr/share/applications/hyprdeck.desktop"
+    install -Dm644 "$startdir/../../assets/hyprdeck.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/hyprdeck.png"
+    install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

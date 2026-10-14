@@ -1,0 +1,65 @@
+[package]
+name = "hyprdeck"
+version = "0.1.0"
+edition = "2021"
+authors = ["Shahriar <info@ridom.dev>"]
+description = "A fast, native TUI profile and dotfile manager for Hyprland"
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/shahriar-ridom/hyprdeck"
+homepage = "https://github.com/shahriar-ridom/hyprdeck"
+keywords = ["hyprland", "dotfiles", "tui", "ratatui", "wayland"]
+categories = ["command-line-utilities", "os::linux-programming"]
+exclude = [
+    ".github/*",
+    "packaging/*",
+    "target/*",
+    "assets/*.xcf",
+    "*.pkg.tar.zst",
+]
+
+[[bin]]
+name = "hyprdeck"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+crossterm = "0.28"
+dirs = "5.0"
+ratatui = "0.29"
+
+# Compilation Profiles (Maximum Performance & Minimal Binary Size)
+[profile.release]
+opt-level = 3            
+lto = true              
+codegen-units = 1      
+panic = "abort"       
+strip = true             
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+# Debian Package Configuration
+[package.metadata.deb]
+name = "hyprdeck"
+maintainer = "Shahriar <youremail@example.com>"
+copyright = "2026, Shahriar <youremail@example.com>"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+A lightweight, reactive terminal UI written in Rust for switching, \
+snapshotting, and hot-reloading Hyprland profiles and ecosystem daemons \
+(Noctalia, Caelestia, Waybar, Quickshell, SwayNC, Pywal, Kitty, and more)."""
+depends = "$auto, hyprland"
+recommends = "kitty, python-pywal"
+suggests = "swaync, dunst, waybar, quickshell"
+section = "utils"
+priority = "optional"
+assets = [
+    # Binary
+    ["target/release/hyprdeck", "usr/bin/hyprdeck", "755"],
+    # Desktop integration
+    ["assets/hyprdeck.desktop", "usr/share/applications/hyprdeck.desktop", "644"],
+    # App Icon
+    ["assets/hyprdeck.png", "usr/share/icons/hicolor/256x256/apps/hyprdeck.png", "644"],
+]

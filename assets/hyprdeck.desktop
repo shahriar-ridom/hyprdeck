@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Hyprdeck
+Comment=Hyprland dotfile and profile manager
+Exec=hyprdeck
+Icon=hyprdeck
+Terminal=true
+Type=Application
+Categories=Utility;System;

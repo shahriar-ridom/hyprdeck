@@ -1,0 +1,26 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Arch Linux packaging artifacts
+packaging/arch/pkg/
+packaging/arch/src/
+packaging/arch/*.pkg.tar.*
+
+# Debian packaging artifacts
+*.deb
+
+# AppImage artifacts
+AppDir/
+linuxdeploy*.AppImage
+*.AppImage
+
+# Checksums and releases
+checksums.txt
+staging/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
