@@ -1,99 +1,165 @@
-# hyprswitch-tui
+# Hyprdeck
 
-`hyprswitch-tui` is a terminal UI for saving, importing, and switching Hyprland desktop configurations. It stores each setup as a named profile, activates profile entries with symlinks, and coordinates common bars, shells, notification daemons, terminal reloads, and optional profile hooks.
+A blazing-fast, keyboard-driven Terminal User Interface (TUI) written in Rust to manage, snapshot, import, and hot-reload Hyprland dotfile profiles and ecosystem daemons on the fly.
 
-## Requirements
+[![Release](https://img.shields.io/github/v/release/shahriar-ridom/hyprdeck?style=for-the-badge&color=00f2fe)](https://github.com/shahriar-ridom/hyprdeck/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
 
-- Linux with a Unix-like filesystem
-- Rust and Cargo (Rust 2021 edition)
-- A Hyprland session for compositor reloads and daemon integration
-- `hyprctl` available in `PATH`
+---
 
-The profile manager itself can run without every supported desktop component installed. Missing commands are skipped and reported in the UI. Supported integrations include Hyprland, Noctalia, Caelestia, QuickShell, Waybar, AGS, EWW, Ironbar, HyprPanel, SwayNC, Dunst, Mako, Kitty, and pywal, along with several configuration-only tools.
+## Downloads
 
-## Install and run
+Download pre-built packages directly for your distribution:
 
-Clone the repository and start the application with Cargo:
+<p align="center">
+  <a href="https://github.com/shahriar-ridom/hyprdeck/releases/latest">
+    <img src="https://img.shields.io/badge/Arch_Linux-.pkg.tar.zst-1793D1?style=for-the-badge&logo=arch-linux&logoColor=white" alt="Download Arch Package" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/shahriar-ridom/hyprdeck/releases/latest">
+    <img src="https://img.shields.io/badge/Debian%20%2F%20Ubuntu-.deb-A81D33?style=for-the-badge&logo=debian&logoColor=white" alt="Download Debian Package" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/shahriar-ridom/hyprdeck/releases/latest">
+    <img src="https://img.shields.io/badge/Universal-.AppImage-blueviolet?style=for-the-badge&logo=appimage&logoColor=white" alt="Download AppImage" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/shahriar-ridom/hyprdeck/releases/latest">
+    <img src="https://img.shields.io/badge/Standalone_Binary-.tar.gz-333333?style=for-the-badge&logo=linux&logoColor=white" alt="Download Generic Tarball" />
+  </a>
+</p>
 
-```sh
-git clone <repository-url>
-cd hyprswitch-tui
-cargo run --release
+---
+
+## Features
+
+* **Zero-Downtime Hot-Reloading:** Switches bars, shells, notification daemons, and terminals cleanly without stacking duplicate surfaces or crashing Wayland layers.
+* **Native Ecosystem Awareness:** Auto-detects and orchestrates:
+  * **Shells & Bars:** Noctalia (v5+ IPC & legacy), Caelestia, Quickshell, Waybar, AGS, Hyprpanel, Ironbar, EWW.
+  * **Terminals:** Kitty (live `SIGUSR1` palette updates), Alacritty, Foot, WezTerm, Ghostty.
+  * **Theming & Utilities:** Pywal (`wal -R`), SwayNC, Dunst, Mako, Starship, Zsh.
+* **Non-Destructive Symlinking:** Automatically backs up existing unmanaged configurations to `~/.hyprdots/backups/` before linking new profiles.
+* **Full Profile Lifecycle:** Snapshot your live configuration into a reusable profile in one keystroke, or import community dotfile repositories effortlessly.
+* **Atomic Hooks:** Drop an optional `reload.sh` script into any profile to execute custom scripts, shaders, or color alterations during profile transitions.
+
+---
+
+## Installation
+
+### Arch Linux
+
+Download and install the native package using `pacman`:
+
+```bash
+# Replace <version> with the current release tag (e.g., 0.1.0)
+curl -LO [https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck-bin-0.1.0-1-x86_64.pkg.tar.zst](https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck-bin-0.1.0-1-x86_64.pkg.tar.zst)
+sudo pacman -U hyprdeck-bin-0.1.0-1-x86_64.pkg.tar.zst
 ```
 
-To install the compiled binary somewhere on your `PATH`:
+### Debian / Ubuntu
 
-```sh
-cargo install --path .
-hyprswitch-tui
+Download and install using `apt`:
+
+```bash
+curl -LO [https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck_0.1.0-1_amd64.deb](https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck_0.1.0-1_amd64.deb)
+sudo apt install ./hyprdeck_0.1.0-1_amd64.deb
 ```
 
-Run it from inside your graphical Hyprland session so the environment needed by Wayland applications is available.
+### AppImage (Universal)
 
-## Key bindings
+No package manager required:
 
-| Key | Action |
-| --- | --- |
-| `j` / `Down` | Select the next profile |
-| `k` / `Up` | Select the previous profile |
-| `Enter` | Activate the selected profile |
-| `s` | Snapshot the current live configuration |
-| `i` | Import a directory as a new profile |
-| `d` | Delete the selected profile after confirmation |
-| `r` | Force-reload daemons for the selected profile |
-| `Esc` | Cancel the current prompt or quit from the main view |
-| `q` | Quit |
+```bash
+curl -LO [https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck-v0.1.0-x86_64.AppImage](https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck-v0.1.0-x86_64.AppImage)
+chmod +x hyprdeck-v0.1.0-x86_64.AppImage
+./hyprdeck-v0.1.0-x86_64.AppImage
+```
 
-## Profiles and storage
+### Build From Source (Cargo)
 
-Profiles are stored under:
+```bash
+git clone [https://github.com/shahriar-ridom/hyprdeck.git](https://github.com/shahriar-ridom/hyprdeck.git)
+cd hyprdeck
+cargo build --release
+sudo install -m 755 target/release/hyprdeck /usr/local/bin/
+```
+
+---
+
+## User Guide
+
+Run `hyprdeck` from your terminal or launcher:
+
+```bash
+hyprdeck
+```
+
+### Keybindings
+
+| Key | Mode | Action |
+| :--- | :--- | :--- |
+| `j` / `↓` | Normal | Navigate down the profile list |
+| `k` / `↑` | Normal | Navigate up the profile list |
+| `Enter` | Normal | Apply selected profile, swap symlinks, and reload daemons |
+| `s` | Normal | **Snapshot:** Save live setup into a new profile |
+| `i` | Normal | **Import:** Load an external dotfiles folder into a managed profile |
+| `d` | Normal | **Delete:** Remove selected profile and unlink active symlinks |
+| `r` | Normal | **Force Reload:** Re-trigger daemon hand-off for selected profile |
+| `q` / `Esc` | Normal | Exit Hyprdeck |
+| `Enter` | Input | Confirm input (Snapshot name, Import path, Delete) |
+| `Esc` | Input | Cancel modal prompt |
+
+---
+
+## Profile Directory Structure
+
+Hyprdeck stores all profiles inside `~/.hyprdots/profiles/`. 
 
 ```text
-~/.hyprdeck/profiles/<profile-name>/
+~/.hyprdots/
+├── backups/                    # Auto-generated backups of replaced configs
+└── profiles/
+    ├── minimal-dark/
+    │   ├── hypr/               # Links to ~/.config/hypr
+    │   ├── waybar/             # Links to ~/.config/waybar
+    │   ├── kitty/              # Links to ~/.config/kitty
+    │   └── reload.sh           # (Optional) Profile-specific startup script
+    └── modern-noctalia/
+        ├── hypr/
+        ├── noctalia/           # Links to ~/.config/noctalia
+        └── starship.toml       # Links to ~/.config/starship.toml
 ```
 
-Each entry in a profile is stored by module name. For example, the `hypr` entry maps to `~/.config/hypr`, while `.zshrc` maps to `~/.zshrc`. When a profile is activated, the application removes symlinks previously created for managed targets, backs up conflicting regular files or directories under `~/.hyprdeck/backups/`, and creates new symlinks into the selected profile.
+### Custom Profile Hooks (`reload.sh`)
 
-The built-in registry recognizes common Hyprland ecosystem paths. Any additional directory found in a profile is treated as a custom `~/.config/<name>` entry. Standalone files such as `starship.toml` and `.zshrc` are recognized explicitly.
+If a profile folder contains an executable script named `reload.sh`, Hyprdeck will run it asynchronously after symlinking targets and restarting core bars:
 
-## Creating a profile
+```bash
+#!/usr/bin/env bash
+# ~/.hyprdots/profiles/modern-noctalia/reload.sh
 
-Press `s`, enter a profile name, and press `Enter`. The application copies recognized configuration entries from your home directory into the new profile and activates it. Existing files are copied into the profile; the live files are not changed until activation.
+# Set wallpaper via swww
+swww img ~/Pictures/Wallpapers/cyberpunk.png --transition-type wipe
 
-Profile names must not contain `/`, `\\`, or `..`.
-
-## Importing a profile
-
-Press `i` and enter a directory containing dotfiles. The importer accepts either the normal home-relative layout, such as:
-
-```text
-dotfiles/.config/hypr
-dotfiles/.config/waybar
-dotfiles/.zshrc
+# Generate colors with pywal or matugen
+wal -i ~/Pictures/Wallpapers/cyberpunk.png -q
 ```
 
-or a flat module layout, such as `dotfiles/hypr` and `dotfiles/waybar`. It imports recognized entries first, then copies additional non-hidden directories from `.config/` as custom modules. After naming the imported profile, press `Enter` again to activate it.
+---
 
-## Daemon hand-off
+## Troubleshooting
 
-Activating a profile reloads Hyprland and starts or reloads services represented by that profile. The application avoids restarting a running Noctalia instance when its IPC reload command is available, stops competing bars and notification daemons before starting the selected one, sends Kitty its live-reload signal, and restores pywal colors when `wal` is present.
+### My bar didn't launch after reloading
+1. Check if the binary exists in your `$PATH` (e.g., `which waybar` or `which noctalia`).
+2. If using Noctalia v5+, verify that the daemon didn't log an error by running:
+   ```bash
+   cat ~/.cache/noctalia/noctalia.log
+   ```
+3. Hit `[r]` inside `hyprdeck` to trigger a manual daemon restart cycle.
 
-If a profile contains an executable `reload.sh`, it is launched after the built-in reload actions. The hook runs detached with its output redirected to `/dev/null`, so use your own logging in the script when troubleshooting.
+---
 
-## Safety notes
+## License
 
-- Activating a profile changes paths in your home directory by replacing managed entries with symlinks.
-- Existing regular files and directories at managed destinations are moved to `~/.hyprdeck/backups/` before replacement.
-- Deleting a profile removes only symlinks that point into that profile and then removes the profile directory. It does not restore backups automatically.
-- The daemon reload feature invokes commands such as `pkill`, `pgrep`, `killall`, `hyprctl`, and shell commands from profile hooks. Review profiles and hooks before activating them.
-
-## Development
-
-Format and check the project with:
-
-```sh
-cargo fmt --check
-cargo check
-```
-
-The application currently lives in `src/main.rs`; the profile registry and daemon integration logic are kept there so supported modules can be audited in one place.
+Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
