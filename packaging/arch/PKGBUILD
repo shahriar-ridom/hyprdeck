@@ -4,7 +4,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="A fast, native TUI profile and dotfile manager for Hyprland"
 arch=('x86_64')
-url="https://github.com/shahriar-ridom/hyprdeck"
+url="https://github.com/yourusername/hyprdeck"
 license=('MIT')
 depends=('gcc-libs' 'glibc')
 optdepends=(
@@ -15,9 +15,9 @@ optdepends=(
     'python-pywal: Dynamic terminal color changer'
 )
 
+# Binary is pre-compiled by cargo in target/release/hyprdeck
 build() {
-    cd "$startdir/../.."
-    cargo build --release
+    true
 }
 
 package() {
