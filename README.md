@@ -1,16 +1,16 @@
 # Hyprdeck
 
-A blazing-fast, keyboard-driven Terminal User Interface (TUI) written in Rust to manage, snapshot, import, and hot-reload Hyprland dotfile profiles and ecosystem daemons on the fly.
+Hyprdeck is a keyboard-driven terminal UI (TUI) written in Rust for managing Hyprland dotfile profiles. It can snapshot the current configuration, import an existing dotfiles directory, switch profiles through symlinks, and reload supported desktop services.
 
 [![Release](https://img.shields.io/github/v/release/shahriar-ridom/hyprdeck?style=for-the-badge&color=00f2fe)](https://github.com/shahriar-ridom/hyprdeck/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-orange.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 
 ---
 
 ## Downloads
 
-Download pre-built packages directly for your distribution:
+Download pre-built packages from the [latest GitHub release](https://github.com/shahriar-ridom/hyprdeck/releases/latest):
 
 <p align="center">
   <a href="https://github.com/shahriar-ridom/hyprdeck/releases/latest">
@@ -34,14 +34,13 @@ Download pre-built packages directly for your distribution:
 
 ## Features
 
-* **Zero-Downtime Hot-Reloading:** Switches bars, shells, notification daemons, and terminals cleanly without stacking duplicate surfaces or crashing Wayland layers.
-* **Native Ecosystem Awareness:** Auto-detects and orchestrates:
-  * **Shells & Bars:** Noctalia (v5+ IPC & legacy), Caelestia, Quickshell, Waybar, AGS, Hyprpanel, Ironbar, EWW.
-  * **Terminals:** Kitty (live `SIGUSR1` palette updates), Alacritty, Foot, WezTerm, Ghostty.
-  * **Theming & Utilities:** Pywal (`wal -R`), SwayNC, Dunst, Mako, Starship, Zsh.
-* **Non-Destructive Symlinking:** Automatically backs up existing unmanaged configurations to `~/.hyprdots/backups/` before linking new profiles.
-* **Full Profile Lifecycle:** Snapshot your live configuration into a reusable profile in one keystroke, or import community dotfile repositories effortlessly.
-* **Atomic Hooks:** Drop an optional `reload.sh` script into any profile to execute custom scripts, shaders, or color alterations during profile transitions.
+- **Profile switching:** Applies profiles through symlinks and backs up existing unmanaged configurations.
+- **Ecosystem reloads:** Reloads Hyprland and starts or restarts supported services when they are present in the selected profile, including Noctalia, Caelestia, Quickshell, Waybar, AGS, Hyprpanel, Ironbar, EWW, SwayNC, Dunst, and Mako.
+- **Terminal and theme support:** Handles Kitty, Alacritty, Foot, WezTerm, Ghostty, Pywal, Starship, Zsh, and more.
+- **Profile lifecycle:** Snapshot the current configuration or import an existing dotfiles directory.
+- **Custom hooks:** Add a `reload.sh` script to a profile to run custom commands after a profile transition.
+
+Hyprdeck stores profiles in `~/.hyprdeck/profiles/` and backups in `~/.hyprdeck/backups/`.
 
 ---
 
@@ -49,40 +48,36 @@ Download pre-built packages directly for your distribution:
 
 ### Arch Linux
 
-Download and install the native package using `pacman`:
+Download the Arch package from the [latest release](https://github.com/shahriar-ridom/hyprdeck/releases/latest), then install it with `pacman`:
 
 ```bash
-# Replace <version> with the current release tag (e.g., 0.1.0)
-curl -LO [https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck-bin-0.1.0-1-x86_64.pkg.tar.zst](https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck-bin-0.1.0-1-x86_64.pkg.tar.zst)
-sudo pacman -U hyprdeck-bin-0.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./hyprdeck-bin-<version>-<release>-x86_64.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
 
-Download and install using `apt`:
+Download the Debian package from the [latest release](https://github.com/shahriar-ridom/hyprdeck/releases/latest), then install it with `apt`:
 
 ```bash
-curl -LO [https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck_0.1.0-1_amd64.deb](https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck_0.1.0-1_amd64.deb)
-sudo apt install ./hyprdeck_0.1.0-1_amd64.deb
+sudo apt install ./hyprdeck_<version>-<release>_amd64.deb
 ```
 
 ### AppImage (Universal)
 
-No package manager required:
+Download the AppImage from the [latest release](https://github.com/shahriar-ridom/hyprdeck/releases/latest), make it executable, and run it:
 
 ```bash
-curl -LO [https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck-v0.1.0-x86_64.AppImage](https://github.com/shahriar-ridom/hyprdeck/releases/download/v0.1.0/hyprdeck-v0.1.0-x86_64.AppImage)
-chmod +x hyprdeck-v0.1.0-x86_64.AppImage
-./hyprdeck-v0.1.0-x86_64.AppImage
+chmod +x ./hyprdeck-<version>-x86_64.AppImage
+./hyprdeck-<version>-x86_64.AppImage
 ```
 
 ### Build From Source (Cargo)
 
 ```bash
-git clone [https://github.com/shahriar-ridom/hyprdeck.git](https://github.com/shahriar-ridom/hyprdeck.git)
+git clone https://github.com/shahriar-ridom/hyprdeck.git
 cd hyprdeck
 cargo build --release
-sudo install -m 755 target/release/hyprdeck /usr/local/bin/
+sudo install -Dm755 target/release/hyprdeck /usr/local/bin/hyprdeck
 ```
 
 ---
@@ -99,51 +94,58 @@ hyprdeck
 
 | Key | Mode | Action |
 | :--- | :--- | :--- |
-| `j` / `↓` | Normal | Navigate down the profile list |
-| `k` / `↑` | Normal | Navigate up the profile list |
+| `j` / `Down` | Normal | Navigate down the profile list |
+| `k` / `Up` | Normal | Navigate up the profile list |
 | `Enter` | Normal | Apply selected profile, swap symlinks, and reload daemons |
 | `s` | Normal | **Snapshot:** Save live setup into a new profile |
 | `i` | Normal | **Import:** Load an external dotfiles folder into a managed profile |
 | `d` | Normal | **Delete:** Remove selected profile and unlink active symlinks |
 | `r` | Normal | **Force Reload:** Re-trigger daemon hand-off for selected profile |
 | `q` / `Esc` | Normal | Exit Hyprdeck |
-| `Enter` | Input | Confirm input (Snapshot name, Import path, Delete) |
-| `Esc` | Input | Cancel modal prompt |
+| `Enter` | Input | Confirm a snapshot name, import path, or imported profile name |
+| `y` / `n` | Delete | Confirm or cancel profile deletion |
+| `Esc` | Input | Cancel the current prompt |
 
 ---
 
 ## Profile Directory Structure
 
-Hyprdeck stores all profiles inside `~/.hyprdots/profiles/`. 
+Hyprdeck stores all profiles inside `~/.hyprdeck/profiles/`.
 
 ```text
-~/.hyprdots/
+~/.hyprdeck/
 ├── backups/                    # Auto-generated backups of replaced configs
 └── profiles/
     ├── minimal-dark/
-    │   ├── hypr/               # Links to ~/.config/hypr
-    │   ├── waybar/             # Links to ~/.config/waybar
-    │   ├── kitty/              # Links to ~/.config/kitty
-    │   └── reload.sh           # (Optional) Profile-specific startup script
+    │   ├── hypr/               # Linked to ~/.config/hypr when active
+    │   ├── waybar/             # Linked to ~/.config/waybar when active
+    │   ├── kitty/              # Linked to ~/.config/kitty when active
+    │   └── reload.sh           # Optional profile hook
     └── modern-noctalia/
         ├── hypr/
-        ├── noctalia/           # Links to ~/.config/noctalia
-        └── starship.toml       # Links to ~/.config/starship.toml
+        ├── noctalia/           # Linked to ~/.config/noctalia when active
+        └── starship.toml       # Linked to ~/.config/starship.toml when active
 ```
 
 ### Custom Profile Hooks (`reload.sh`)
 
-If a profile folder contains an executable script named `reload.sh`, Hyprdeck will run it asynchronously after symlinking targets and restarting core bars:
+If a profile folder contains a file named `reload.sh`, Hyprdeck runs it asynchronously with `sh` after symlinking targets and reloading services:
 
 ```bash
 #!/usr/bin/env bash
-# ~/.hyprdots/profiles/modern-noctalia/reload.sh
+# ~/.hyprdeck/profiles/modern-noctalia/reload.sh
 
 # Set wallpaper via swww
 swww img ~/Pictures/Wallpapers/cyberpunk.png --transition-type wipe
 
 # Generate colors with pywal or matugen
 wal -i ~/Pictures/Wallpapers/cyberpunk.png -q
+```
+
+Make the hook executable:
+
+```bash
+chmod +x ~/.hyprdeck/profiles/modern-noctalia/reload.sh
 ```
 
 ---
