@@ -1,3 +1,5 @@
+mod logo;
+
 use anyhow::{Context, Result};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
@@ -6,7 +8,7 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::{
     collections::BTreeSet,
@@ -18,6 +20,109 @@ use std::{
     thread,
     time::Duration,
 };
+
+// ---------------------------------------------------------------------------
+// Theme
+//
+// The palette is lifted straight from the artwork (logo.png): the purple and
+// blue of the stacked windows plus the dark slate of the front card.
+// ---------------------------------------------------------------------------
+
+const C_PURPLE: Color = Color::Rgb(0xb4, 0x8f, 0xf6);
+const C_BLUE: Color = Color::Rgb(0x82, 0xb5, 0xfd);
+const C_SLATE: Color = Color::Rgb(0x2d, 0x37, 0x5b);
+const C_TEXT: Color = Color::Rgb(0xd8, 0xdd, 0xea);
+const C_MUTED: Color = Color::Rgb(0x9a, 0xa2, 0xba);
+const C_DIM: Color = Color::Rgb(0x5f, 0x68, 0x84);
+const C_OK: Color = Color::Rgb(0x8b, 0xd4, 0xa0);
+const C_WARN: Color = Color::Rgb(0xf6, 0xc1, 0x77);
+const C_ERR: Color = Color::Rgb(0xf2, 0x7e, 0x8a);
+
+const PURPLE_RGB: (u8, u8, u8) = (0xb4, 0x8f, 0xf6);
+const BLUE_RGB: (u8, u8, u8) = (0x82, 0xb5, 0xfd);
+
+/// A rounded panel with a styled title, matching the app's visual language.
+fn panel<'a>(title: Line<'a>, accent: Color) -> Block<'a> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .title(title)
+}
+
+/// Colour a word left-to-right with a linear gradient between two RGB values.
+fn gradient(text: &str, from: (u8, u8, u8), to: (u8, u8, u8), bold: bool) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let last = chars.len().saturating_sub(1).max(1) as f32;
+
+    chars
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let t = i as f32 / last;
+            let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+            let mut style = Style::default().fg(Color::Rgb(
+                mix(from.0, to.0),
+                mix(from.1, to.1),
+                mix(from.2, to.2),
+            ));
+            if bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            Span::styled(c.to_string(), style)
+        })
+        .collect()
+}
+
+/// `[key] label` chip used across the footer and empty states.
+fn key_hint(key: &str, label: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(
+            format!(" {} ", key),
+            Style::default()
+                .fg(C_BLUE)
+                .bg(C_SLATE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" {}   ", label), Style::default().fg(C_MUTED)),
+    ]
+}
+
+/// Pick a status colour from the message text.
+fn status_style(msg: &str) -> Style {
+    let m = msg.to_ascii_lowercase();
+    if [
+        "error",
+        "failed",
+        "invalid",
+        "cannot",
+        "cancelled",
+        "cancel",
+    ]
+    .iter()
+    .any(|k| m.contains(k))
+    {
+        if m.contains("cancel") {
+            Style::default().fg(C_MUTED)
+        } else {
+            Style::default().fg(C_ERR).add_modifier(Modifier::BOLD)
+        }
+    } else if [
+        "switched",
+        "created",
+        "imported",
+        "deleted",
+        "reloaded",
+        "activated",
+    ]
+    .iter()
+    .any(|k| m.contains(k))
+    {
+        Style::default().fg(C_OK).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(C_WARN)
+    }
+}
 
 #[derive(PartialEq)]
 enum InputMode {
@@ -66,9 +171,7 @@ impl App {
             profiles: Vec::new(),
             state: ListState::default(),
             active_profile: String::from("External / Unmanaged"),
-            status_msg: String::from(
-                "[Enter] Switch | [s] Snapshot | [i] Import | [d] Delete | [r] Reload Daemons | [q] Quit",
-            ),
+            status_msg: String::from("Ready — pick a profile and press [Enter] to activate it."),
             last_reload_summary: String::from("No daemon reload triggered yet in this session."),
             base_dir,
             home_dir,
@@ -951,148 +1054,542 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
 }
 
 fn ui(frame: &mut Frame, app: &mut App) {
-    let main_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
-        .split(frame.area());
+    let area = frame.area();
+    let rows = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .split(area);
 
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(main_layout[0]);
+    render_header(frame, rows[0], app);
+    render_body(frame, rows[1], app);
+    render_footer(frame, rows[2], app);
+    render_overlays(frame, app);
+}
+
+/// Top bar: gradient wordmark in the border, live state on the right.
+fn render_header(frame: &mut Frame, area: Rect, app: &App) {
+    let mut title = vec![Span::raw(" ")];
+    title.extend(gradient("HYPRDECK", PURPLE_RGB, BLUE_RGB, true));
+    title.push(Span::styled(
+        "  ·  Hyprland profile & dotfile manager ",
+        Style::default().fg(C_DIM),
+    ));
+
+    let block = panel(Line::from(title), C_SLATE);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width < 8 || inner.height == 0 {
+        return;
+    }
+
+    let managed = !app.active_profile.contains("External") && !app.active_profile.contains("None");
+    let mut left = vec![Span::raw("  ")];
+    if managed {
+        left.push(Span::styled("● ", Style::default().fg(C_OK)));
+        left.push(Span::styled("active ", Style::default().fg(C_DIM)));
+        left.push(Span::styled(
+            app.active_profile.clone(),
+            Style::default().fg(C_OK).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        left.push(Span::styled("○ ", Style::default().fg(C_DIM)));
+        left.push(Span::styled(
+            "no profile active ",
+            Style::default().fg(C_DIM),
+        ));
+    }
+
+    let stats = format!(
+        "{} profile{}  ·  {} targets tracked  ",
+        app.profiles.len(),
+        if app.profiles.len() == 1 { "" } else { "s" },
+        app.known_targets.len()
+    );
+
+    let halves = Layout::horizontal([
+        Constraint::Min(1),
+        Constraint::Length(stats.chars().count() as u16),
+    ])
+    .split(inner);
+
+    frame.render_widget(Paragraph::new(Line::from(left)), halves[0]);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(stats, Style::default().fg(C_DIM))))
+            .alignment(Alignment::Right),
+        halves[1],
+    );
+}
+
+/// Two-column workspace: the branded sidebar and the details pane.
+fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
+    if area.width < 44 || area.height < 5 {
+        // Too cramped to split — degrade to the profile list alone.
+        render_profile_list(frame, area, app);
+        return;
+    }
+
+    let sidebar_w = (area.width / 100 * 34).clamp(30, 44).min(area.width - 20);
+    let cols = Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(20)]).split(area);
+
+    render_sidebar(frame, cols[0], app);
+    render_details(frame, cols[1], app);
+}
+
+/// Sidebar: the logo splash on top of the profile list.
+fn render_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
+    let (mut rows, mut show_logo) = (0usize, area.height >= 18 && area.width >= 18);
+    if show_logo {
+        // Give the artwork roughly half the column, but never starve the list.
+        rows = (area.height.saturating_sub(10) as usize).clamp(4, 13);
+        // Half-block cells are twice as tall as they are wide, so a square
+        // mark needs twice as many columns as rows. Trim to fit the sidebar.
+        let max_cols = area.width.saturating_sub(6) as usize;
+        while rows > 4 && rows * 2 > max_cols {
+            rows -= 1;
+        }
+        // Below this the artwork turns to mush, so drop it entirely.
+        show_logo = rows >= 8;
+    }
+
+    if !show_logo {
+        render_profile_list(frame, area, app);
+        return;
+    }
+
+    let logo_h = rows as u16 + 2;
+    let parts = Layout::vertical([Constraint::Length(logo_h), Constraint::Min(4)]).split(area);
+
+    render_logo(frame, parts[0], rows * 2, rows);
+    render_profile_list(frame, parts[1], app);
+}
+
+/// The artwork, centered inside its own rounded card.
+fn render_logo(frame: &mut Frame, area: Rect, cols: usize, rows: usize) {
+    let title = Line::from(vec![
+        Span::styled(" ◈ ", Style::default().fg(C_PURPLE)),
+        Span::styled("hyprdeck", Style::default().fg(C_BLUE)),
+        Span::raw(" "),
+    ]);
+    let block = panel(title, C_SLATE);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let lines = logo::render(cols, rows);
+    let height = (rows as u16).min(inner.height);
+    let art = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(height) / 2,
+        width: inner.width,
+        height,
+    };
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).alignment(Alignment::Center),
+        art,
+    );
+}
+
+fn render_profile_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    let title = Line::from(vec![Span::styled(
+        format!("  Profiles · {} ", app.profiles.len()),
+        Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD),
+    )]);
+    let block = panel(title, C_BLUE);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.profiles.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Nothing here yet.",
+                    Style::default().fg(C_TEXT),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("[s]", Style::default().fg(C_BLUE)),
+                    Span::styled(" snapshot your live setup", Style::default().fg(C_DIM)),
+                ]),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("[i]", Style::default().fg(C_BLUE)),
+                    Span::styled(" import a dotfiles folder", Style::default().fg(C_DIM)),
+                ]),
+            ]),
+            inner,
+        );
+        return;
+    }
 
     let items: Vec<ListItem> = app
         .profiles
         .iter()
-        .map(|p| {
-            let prefix = if *p == app.active_profile {
-                "● "
+        .map(|name| {
+            let active = *name == app.active_profile;
+            let (marker, marker_style) = if active {
+                ("● ", Style::default().fg(C_OK))
             } else {
-                "  "
+                ("○ ", Style::default().fg(C_DIM))
             };
-            ListItem::new(format!("{}{}", prefix, p))
+            let name_style = if active {
+                Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(C_TEXT)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::styled(name.clone(), name_style),
+            ]))
         })
         .collect();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .title(" Hyprland Profiles ")
-                .borders(Borders::ALL),
+        .highlight_style(
+            Style::default()
+                .bg(C_SLATE)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )
-        .highlight_style(Style::default().bg(Color::Cyan).fg(Color::Black).bold())
-        .highlight_symbol(">> ");
+        .highlight_symbol("▌ ");
 
-    frame.render_stateful_widget(list, top_chunks[0], &mut app.state);
+    frame.render_stateful_widget(list, inner, &mut app.state);
+}
 
-    let preview_text = if let Some(selected) = app.state.selected() {
-        let profile = &app.profiles[selected];
-        let profile_path = app.base_dir.join("profiles").join(profile);
-        let detected_targets = app.get_profile_targets(profile);
-
-        let mut target_lines = String::new();
-        if detected_targets.is_empty() {
-            target_lines.push_str("  (Empty profile folder)\n");
-        } else {
-            for t in &detected_targets {
-                target_lines.push_str(&format!(
-                    "  [✓] {:<15} -> ~/{:<24} ({})\n",
-                    t.store_name, t.home_rel_path, t.category
-                ));
-            }
-        }
-
-        let has_custom_hook = if profile_path.join("reload.sh").exists() {
-            "Yes (reload.sh found)"
-        } else {
-            "None (Optional: add reload.sh to profile folder)"
-        };
-
-        format!(
-            "Active Profile:   {}\nSelected Profile: {}\nLocation:         {}\nCustom Hook:      {}\nLast Reload:      {}\n\nDetected Ecosystem Modules ({}):\n{}\nKeybinds:\n  [Enter] : Activate profile & switch running daemons\n  [r]     : Force-reload daemons for selected profile\n  [s]     : Snapshot current live setup\n  [i]     : Import external dotfiles folder\n  [d]     : Delete selected profile\n  [q]     : Quit",
-            app.active_profile,
-            profile,
-            profile_path.display(),
-            has_custom_hook,
-            app.last_reload_summary,
-            detected_targets.len(),
-            target_lines
-        )
-    } else {
-        format!(
-            "Active Profile: {}\n\nNo saved profiles found in ~/.hyprdeck/profiles.\n\nAuto-Detects & Reloads Ecosystem Modules:\n  - WM & Shells: hypr, noctalia, caelestia, quickshell, waybar, ags, eww\n  - Terminals:   kitty (live SIGUSR1 reload), alacritty, foot, wezterm, ghostty\n  - Launchers:   rofi, wofi, fuzzel, tofi, anyrun, walker\n  - Theming:     wal (live wal -R), starship.toml, .zshrc, dunst, swaync, mako\n\nKeybinds:\n  [s] : Snapshot your current live setup\n  [i] : Import an external dotfiles folder\n  [q] : Quit",
-            app.active_profile
-        )
+fn render_details(frame: &mut Frame, area: Rect, app: &App) {
+    let label = match app.state.selected() {
+        Some(i) => app.profiles[i].clone(),
+        None => String::from("welcome"),
     };
 
-    let preview = Paragraph::new(preview_text).block(
-        Block::default()
-            .title(" Profile Details ")
-            .borders(Borders::ALL),
+    let title = Line::from(vec![
+        Span::styled(
+            "  Details ",
+            Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("· {} ", label), Style::default().fg(C_DIM)),
+    ]);
+    let block = panel(title, C_SLATE);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = match app.state.selected() {
+        Some(selected) => profile_details(app, selected),
+        None => welcome_details(app, inner.width as usize),
+    };
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+fn profile_details(app: &App, selected: usize) -> Vec<Line<'static>> {
+    let profile = &app.profiles[selected];
+    let profile_path = app.base_dir.join("profiles").join(profile);
+    let targets = app.get_profile_targets(profile);
+    let active = *profile == app.active_profile;
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                profile.clone(),
+                Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD),
+            ),
+            if active {
+                Span::styled("   ● active", Style::default().fg(C_OK))
+            } else {
+                Span::styled("   ○ inactive", Style::default().fg(C_DIM))
+            },
+        ]),
+        Line::from(Span::styled(
+            format!("  {}", profile_path.display()),
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(""),
+    ];
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Modules ",
+            Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("({})", targets.len()), Style::default().fg(C_DIM)),
+    ]));
+
+    if targets.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "    empty profile directory",
+            Style::default().fg(C_DIM),
+        )));
+    } else {
+        for target in &targets {
+            lines.push(Line::from(vec![
+                Span::styled("    ✓ ", Style::default().fg(C_OK)),
+                Span::styled(
+                    format!("{:<16}", target.store_name),
+                    Style::default().fg(C_TEXT),
+                ),
+                Span::styled(
+                    format!("{:<26}", target.home_rel_path),
+                    Style::default().fg(C_MUTED),
+                ),
+                Span::styled(target.category.to_string(), Style::default().fg(C_DIM)),
+            ]));
+        }
+    }
+
+    let hook = if profile_path.join("reload.sh").exists() {
+        Span::styled("reload.sh found", Style::default().fg(C_OK))
+    } else {
+        Span::styled("none (optional)", Style::default().fg(C_DIM))
+    };
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Custom hook   ", Style::default().fg(C_MUTED)),
+        hook,
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  Last reload   ", Style::default().fg(C_MUTED)),
+        Span::styled(app.last_reload_summary.clone(), Style::default().fg(C_TEXT)),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("[Enter]", Style::default().fg(C_BLUE)),
+        Span::styled(
+            " activates this profile and restarts its daemons",
+            Style::default().fg(C_DIM),
+        ),
+    ]));
+
+    lines
+}
+
+fn welcome_details(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Welcome to Hyprdeck",
+                Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            "  No profiles yet. Save the setup you are running now, or import one:",
+            Style::default().fg(C_MUTED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "[s]",
+                Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  snapshot the current configuration",
+                Style::default().fg(C_TEXT),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "[i]",
+                Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  import an existing dotfiles folder",
+                Style::default().fg(C_TEXT),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  Targets Hyprdeck tracks ({})", app.known_targets.len()),
+            Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    let mut grouped: Vec<(&str, Vec<&str>)> = Vec::new();
+    for target in &app.known_targets {
+        match grouped.iter_mut().find(|(cat, _)| *cat == target.category) {
+            Some((_, names)) => names.push(target.store_name.as_str()),
+            None => grouped.push((target.category, vec![target.store_name.as_str()])),
+        }
+    }
+
+    // Keep continuation lines aligned under the names column instead of
+    // letting the paragraph wrap them back to the left edge.
+    const NAMES_COL: usize = 19; // 3 leading spaces + 16-wide category column
+    let available = width.saturating_sub(NAMES_COL).max(12);
+
+    for (category, names) in grouped {
+        for (i, chunk) in wrap_names(&names, available).into_iter().enumerate() {
+            let lead = if i == 0 {
+                format!("   {category:<16}")
+            } else {
+                " ".repeat(NAMES_COL)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(lead, Style::default().fg(C_MUTED)),
+                Span::styled(chunk, Style::default().fg(C_DIM)),
+            ]));
+        }
+    }
+
+    lines
+}
+
+/// Greedily pack `names` into comma-separated lines that fit `width` columns.
+fn wrap_names(names: &[&str], width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for name in names {
+        let candidate = if current.is_empty() {
+            (*name).to_string()
+        } else {
+            format!("{current}, {name}")
+        };
+
+        if candidate.chars().count() > width && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+            current = (*name).to_string();
+        } else {
+            current = candidate;
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+    let status_area = Rect { height: 1, ..area };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(app.status_msg.clone(), status_style(&app.status_msg)),
+        ])),
+        status_area,
     );
-    frame.render_widget(preview, top_chunks[1]);
 
-    let status = Paragraph::new(app.status_msg.as_str())
-        .style(Style::default().fg(Color::Yellow))
-        .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(status, main_layout[1]);
+    if area.height < 2 {
+        return;
+    }
 
+    let mut spans = vec![Span::raw("  ")];
+    for (key, label) in [
+        ("Enter", "Activate"),
+        ("s", "Snapshot"),
+        ("i", "Import"),
+        ("d", "Delete"),
+        ("r", "Reload"),
+        ("↑↓", "Select"),
+        ("q", "Quit"),
+    ] {
+        spans.extend(key_hint(key, label));
+    }
+
+    let hints_area = Rect {
+        y: area.y + 1,
+        height: 1,
+        ..area
+    };
+    frame.render_widget(Paragraph::new(Line::from(spans)), hints_area);
+}
+
+fn render_overlays(frame: &mut Frame, app: &App) {
     match app.input_mode {
         InputMode::Normal => {}
         InputMode::SnapshotName => {
-            let area = centered_rect(55, 3, frame.area());
+            let area = centered_rect(58, 3, frame.area());
             frame.render_widget(Clear, area);
-            let input_box = Paragraph::new(format!("{}_", app.input_buffer))
-                .style(Style::default().fg(Color::Cyan))
-                .block(
-                    Block::default()
-                        .title(" New Snapshot Name (Enter to Save, Esc to Cancel) ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Cyan)),
-                );
+            let input_box = Paragraph::new(Line::from(vec![
+                Span::styled(app.input_buffer.clone(), Style::default().fg(C_TEXT)),
+                Span::styled("_", Style::default().fg(C_BLUE)),
+            ]))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(C_BLUE))
+                    .title(Line::from(Span::styled(
+                        " New snapshot name · Enter to save, Esc to cancel ",
+                        Style::default().fg(C_BLUE),
+                    ))),
+            );
             frame.render_widget(input_box, area);
         }
         InputMode::ImportPath => {
-            let area = centered_rect(65, 3, frame.area());
+            let area = centered_rect(68, 3, frame.area());
             frame.render_widget(Clear, area);
-            let input_box = Paragraph::new(format!("{}_", app.input_buffer))
-                .style(Style::default().fg(Color::Green))
-                .block(
-                    Block::default()
-                        .title(" Import Step 1/2: Source Folder Path (e.g. ~/dotfiles) ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Green)),
-                );
+            let input_box = Paragraph::new(Line::from(vec![
+                Span::styled(app.input_buffer.clone(), Style::default().fg(C_TEXT)),
+                Span::styled("_", Style::default().fg(C_PURPLE)),
+            ]))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(C_PURPLE))
+                    .title(Line::from(Span::styled(
+                        " Import 1/2 · source folder (e.g. ~/dotfiles) ",
+                        Style::default().fg(C_PURPLE),
+                    ))),
+            );
             frame.render_widget(input_box, area);
         }
         InputMode::ImportName => {
-            let area = centered_rect(65, 3, frame.area());
+            let area = centered_rect(68, 3, frame.area());
             frame.render_widget(Clear, area);
-            let input_box = Paragraph::new(format!("{}_", app.input_buffer))
-                .style(Style::default().fg(Color::Green))
-                .block(
-                    Block::default()
-                        .title(" Import Step 2/2: Name For Imported Profile ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Green)),
-                );
+            let input_box = Paragraph::new(Line::from(vec![
+                Span::styled(app.input_buffer.clone(), Style::default().fg(C_TEXT)),
+                Span::styled("_", Style::default().fg(C_PURPLE)),
+            ]))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(C_PURPLE))
+                    .title(Line::from(Span::styled(
+                        " Import 2/2 · name for the imported profile ",
+                        Style::default().fg(C_PURPLE),
+                    ))),
+            );
             frame.render_widget(input_box, area);
         }
         InputMode::ConfirmDelete => {
             if let Some(selected) = app.state.selected() {
                 let name = &app.profiles[selected];
-                let area = centered_rect(55, 4, frame.area());
+                let area = centered_rect(58, 4, frame.area());
                 frame.render_widget(Clear, area);
-                let confirm_box = Paragraph::new(format!(
-                    "Are you sure you want to permanently delete '{}'?\nPress [y] to Confirm, or [n] / [Esc] to Cancel.",
-                    name
-                ))
-                .style(Style::default().fg(Color::Red).bold())
+                let confirm_box = Paragraph::new(Line::from(vec![
+                    Span::styled("Delete ", Style::default().fg(C_TEXT)),
+                    Span::styled(
+                        name.clone(),
+                        Style::default().fg(C_ERR).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("? This cannot be undone.", Style::default().fg(C_TEXT)),
+                ]))
                 .block(
                     Block::default()
-                        .title(" ⚠ Confirm Delete Profile ")
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Red)),
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(C_ERR))
+                        .title(Line::from(Span::styled(
+                            " Confirm delete · y to confirm, n / Esc to cancel ",
+                            Style::default().fg(C_ERR),
+                        ))),
                 );
                 frame.render_widget(confirm_box, area);
             }

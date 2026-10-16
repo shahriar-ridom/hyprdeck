@@ -1,0 +1,76 @@
+//! Embedded Hyprdeck logo.
+//!
+//! Generated from `logo.png` by `tools/gen_logo.py`. Checked in so the TUI
+//! needs no image-decoding dependency at build or run time. The mark is kept as
+//! a small truecolour pixel grid that is downsampled on the fly to whatever
+//! size the terminal can offer, then drawn with Unicode half-block glyphs.
+
+use ratatui::prelude::*;
+
+/// Width/height of the embedded pixel grid.
+pub const SRC: usize = __SRC__;
+
+/// `0` means transparent, anything else is `0xRRGGBB`.
+#[rustfmt::skip]
+pub const PIXELS: [[u32; SRC]; SRC] = [
+    __DATA__,
+];
+
+/// Average the source pixels covered by one target pixel.
+/// Returns the colour and its coverage in `0.0..=1.0`.
+fn sample(cols: usize, rows: usize, tx: usize, ty: usize) -> (Color, f32) {
+    let px_h = rows * 2;
+
+    let x0 = tx * SRC / cols;
+    let x1 = ((tx + 1) * SRC / cols).max(x0 + 1).min(SRC);
+    let y0 = ty * SRC / px_h;
+    let y1 = ((ty + 1) * SRC / px_h).max(y0 + 1).min(SRC);
+
+    let (mut r, mut g, mut b, mut hits, mut total) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    for row in PIXELS.iter().take(y1).skip(y0) {
+        for &v in row.iter().take(x1).skip(x0) {
+            total += 1;
+            if v != 0 {
+                hits += 1;
+                r += (v >> 16) & 0xff;
+                g += (v >> 8) & 0xff;
+                b += v & 0xff;
+            }
+        }
+    }
+
+    if hits == 0 {
+        return (Color::Reset, 0.0);
+    }
+    (
+        Color::Rgb((r / hits) as u8, (g / hits) as u8, (b / hits) as u8),
+        hits as f32 / total.max(1) as f32,
+    )
+}
+
+/// Render the logo as `rows` terminal rows (twice as many pixels tall) across
+/// `cols` columns, using half-block glyphs so every cell carries two pixels.
+/// Callers should pass `cols == 2 * rows` to keep the mark square.
+pub fn render(cols: usize, rows: usize) -> Vec<Line<'static>> {
+    const COVERAGE: f32 = 0.5;
+
+    (0..rows)
+        .map(|row| {
+            let spans: Vec<Span<'static>> = (0..cols)
+                .map(|col| {
+                    let (top, top_cov) = sample(cols, rows, col, row * 2);
+                    let (bottom, bot_cov) = sample(cols, rows, col, row * 2 + 1);
+                    match (top_cov >= COVERAGE, bot_cov >= COVERAGE) {
+                        (false, false) => Span::raw(" "),
+                        (true, true) => {
+                            Span::styled("\u{2580}", Style::default().fg(top).bg(bottom))
+                        }
+                        (true, false) => Span::styled("\u{2580}", Style::default().fg(top)),
+                        (false, true) => Span::styled("\u{2584}", Style::default().fg(bottom)),
+                    }
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect()
+}
