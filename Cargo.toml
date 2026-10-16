@@ -16,6 +16,9 @@ exclude = [
     "target/*",
     "assets/*.xcf",
     "*.pkg.tar.zst",
+    # Source artwork and the generator that derives the committed assets.
+    "logo.png",
+    "tools/*",
 ]
 
 [[bin]]

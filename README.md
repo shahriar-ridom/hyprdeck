@@ -2,6 +2,10 @@
 
 Hyprdeck is a keyboard-driven terminal UI (TUI) written in Rust for managing Hyprland dotfile profiles. It can snapshot the current configuration, import an existing dotfiles directory, switch profiles through symlinks, and reload supported desktop services.
 
+<p align="center">
+  <img src="logo.png" alt="Hyprdeck logo" width="160" />
+</p>
+
 [![Release](https://img.shields.io/github/v/release/shahriar-ridom/hyprdeck?style=for-the-badge&color=00f2fe)](https://github.com/shahriar-ridom/hyprdeck/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-orange.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
