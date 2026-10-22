@@ -1,6 +1,6 @@
 [package]
 name = "hyprdeck"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Shahriar <info@ridom.dev>"]
 description = "A fast, native TUI profile and dotfile manager for Hyprland"
