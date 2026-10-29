@@ -46,8 +46,8 @@ debug = true
 # Debian Package Configuration
 [package.metadata.deb]
 name = "hyprdeck"
-maintainer = "Shahriar <youremail@example.com>"
-copyright = "2026, Shahriar <youremail@example.com>"
+maintainer = "Shahriar <info@ridom.dev>"
+copyright = "2026, Shahriar <info@ridom.dev>"
 license-file = ["LICENSE", "4"]
 extended-description = """\
 A lightweight, reactive terminal UI written in Rust for switching, \

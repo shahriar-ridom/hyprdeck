@@ -51,6 +51,33 @@ const PURPLE_RGB: (u8, u8, u8) = (0xb4, 0x8f, 0xf6);
 const BLUE_RGB: (u8, u8, u8) = (0x82, 0xb5, 0xfd);
 
 /// Replace home path prefix with `~/` for compact, clean display.
+/// Browser data directories (profiles, settings, sessions). Never snapshotted,
+/// imported or linked: switching dotfile profiles must not touch browser settings.
+const BROWSER_DIRS: &[&str] = &[
+    "zen",
+    "mozilla",
+    "librewolf",
+    "floorp",
+    "waterfox",
+    "firefox",
+    "google-chrome",
+    "google-chrome-beta",
+    "google-chrome-unstable",
+    "chromium",
+    "BraveSoftware",
+    "vivaldi",
+    "microsoft-edge",
+    "opera",
+    "thorium",
+    "epiphany",
+    ".zen",
+    ".mozilla",
+];
+
+fn is_browser_dir(name: &str) -> bool {
+    BROWSER_DIRS.contains(&name)
+}
+
 fn compact_path(path: &Path, home: &Path) -> String {
     if let Ok(stripped) = path.strip_prefix(home) {
         format!("~/{}", stripped.display())
@@ -100,7 +127,10 @@ fn key_hint(key: &str, label: &str) -> Vec<Span<'static>> {
 /// Formats a status badge pill and corresponding message style based on content.
 fn status_badge(msg: &str) -> (Span<'static>, Style) {
     let m = msg.to_ascii_lowercase();
-    if ["error", "failed", "invalid", "cannot"].iter().any(|k| m.contains(k)) {
+    if ["error", "failed", "invalid", "cannot"]
+        .iter()
+        .any(|k| m.contains(k))
+    {
         (
             Span::styled(
                 " ✖ ERROR ",
@@ -346,14 +376,7 @@ impl App {
         }
 
         // Notification Daemons
-        for notif in [
-            "swaync",
-            "dunst",
-            "mako",
-            "fnott",
-            "wired",
-            "deadd",
-        ] {
+        for notif in ["swaync", "dunst", "mako", "fnott", "wired", "deadd"] {
             add_config(&mut reg, notif, "Notification");
         }
 
@@ -481,7 +504,8 @@ impl App {
                 "Idle / Lock"
             } else if lower.contains("paper") || lower.contains("wall") {
                 "Wallpaper / Display"
-            } else if lower.contains("menu") || lower.contains("rofi") || lower.contains("launcher") {
+            } else if lower.contains("menu") || lower.contains("rofi") || lower.contains("launcher")
+            {
                 "Launcher / Menu"
             } else if lower.contains("notif") || lower.contains("dunst") || lower.contains("mako") {
                 "Notification"
@@ -550,9 +574,13 @@ impl App {
                     .stderr(Stdio::null())
                     .spawn();
                 if res.is_ok() {
-                    self.status_msg = format!("Opened profile directory: {}", compact_path(&path, &self.home_dir));
+                    self.status_msg = format!(
+                        "Opened profile directory: {}",
+                        compact_path(&path, &self.home_dir)
+                    );
                 } else {
-                    self.status_msg = format!("Profile directory: {}", compact_path(&path, &self.home_dir));
+                    self.status_msg =
+                        format!("Profile directory: {}", compact_path(&path, &self.home_dir));
                 }
             }
         }
@@ -661,41 +689,31 @@ impl App {
     }
 
     /// Remove any symlinks in ~/.config or ~ that point into hyprdeck profiles.
-    fn clean_profile_symlinks(&self) {
+    /// Returns the removed `(link, destination)` pairs so a failed switch can restore them.
+    fn clean_profile_symlinks(&self) -> Vec<(PathBuf, PathBuf)> {
         let profiles_dir = self.base_dir.join("profiles");
+        let mut removed = Vec::new();
 
-        // Clean ~/.config entries
-        let config_dir = self.home_dir.join(".config");
-        if let Ok(entries) = fs::read_dir(&config_dir) {
+        for dir in [self.home_dir.join(".config"), self.home_dir.clone()] {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
-                if let Ok(meta) = fs::symlink_metadata(&path) {
-                    if meta.file_type().is_symlink() {
-                        if let Ok(dest) = fs::read_link(&path) {
-                            if dest.starts_with(&profiles_dir) {
-                                let _ = fs::remove_file(&path);
-                            }
-                        }
+                let is_link = fs::symlink_metadata(&path)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false);
+                if !is_link {
+                    continue;
+                }
+                if let Ok(dest) = fs::read_link(&path) {
+                    if dest.starts_with(&profiles_dir) && fs::remove_file(&path).is_ok() {
+                        removed.push((path, dest));
                     }
                 }
             }
         }
-
-        // Clean home root dotfiles
-        if let Ok(entries) = fs::read_dir(&self.home_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Ok(meta) = fs::symlink_metadata(&path) {
-                    if meta.file_type().is_symlink() {
-                        if let Ok(dest) = fs::read_link(&path) {
-                            if dest.starts_with(&profiles_dir) {
-                                let _ = fs::remove_file(&path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        removed
     }
 
     fn expand_tilde(&self, raw_path: &str) -> PathBuf {
@@ -760,7 +778,7 @@ impl App {
             if let Ok(entries) = fs::read_dir(&dot_config) {
                 for entry in entries.flatten() {
                     if let Some(folder_name) = entry.file_name().to_str() {
-                        if !folder_name.starts_with('.') {
+                        if !folder_name.starts_with('.') && !is_browser_dir(folder_name) {
                             let target_dest = new_profile_dir.join(folder_name);
                             if Self::copy_entry(&entry.path(), &target_dest, &new_profile_dir)? {
                                 imported_items.insert(folder_name.to_string());
@@ -773,14 +791,24 @@ impl App {
 
         // 2. Import all items from root of the external folder
         let ignored_root = [
-            ".git", ".github", ".gitignore", ".config", "docs", "assets", "packaging",
-            "target", "LICENSE", "LICENSE.md", "README", "README.md",
+            ".git",
+            ".github",
+            ".gitignore",
+            ".config",
+            "docs",
+            "assets",
+            "packaging",
+            "target",
+            "LICENSE",
+            "LICENSE.md",
+            "README",
+            "README.md",
         ];
 
         if let Ok(entries) = fs::read_dir(&self.pending_import_path) {
             for entry in entries.flatten() {
                 if let Some(item_name) = entry.file_name().to_str() {
-                    if ignored_root.contains(&item_name) {
+                    if ignored_root.contains(&item_name) || is_browser_dir(item_name) {
                         continue;
                     }
                     if item_name == "reload.sh" {
@@ -901,31 +929,79 @@ impl App {
             let live_path = self.home_dir.join(&target.home_rel_path);
             let target_dest = new_profile_dir.join(&target.store_name);
 
-            if live_path.exists() || fs::symlink_metadata(&live_path).is_ok() {
-                if Self::copy_entry(&live_path, &target_dest, &new_profile_dir)? {
-                    copied_items.insert(target.store_name.clone());
-                }
+            if (live_path.exists() || fs::symlink_metadata(&live_path).is_ok())
+                && Self::copy_entry(&live_path, &target_dest, &new_profile_dir)?
+            {
+                copied_items.insert(target.store_name.clone());
             }
         }
 
         // 2. Discover and snapshot all other configs in ~/.config
         let excluded_dirs = [
-            "google-chrome", "BraveSoftware", "chromium", "mozilla", "librewolf", "epiphany",
-            "dconf", "pulse", "evolution", "procps", "BetterDiscord", "Equicord", "Vencord",
-            "legcord", "vesktop", "discord", "slack", "Claude", "obsidian", "zoom", "teams",
-            "spotify", "systemd", "session", "user-dirs.dirs", "user-dirs.locale", "mimeapps.list",
-            "monitors.xml", "kdeglobals", "kdenliverc", "kiorc", "trashrc", "filetypesrc",
-            "baloofileinformationrc", "dolphinrc", "dolphin.kmessagebox", "QtProject",
-            "QtProject.conf", "fcitx", "fcitx5", "ibus", "easyeffects", "libreoffice", "peazip",
-            "GIMP", "audacity", "Blackmagic Design", "go", "Kitware", "rncbc.org", "Softdeluxe",
-            "Unknown Organization", "gtk-backup", "pavucontrol.ini",
+            "google-chrome",
+            "BraveSoftware",
+            "chromium",
+            "mozilla",
+            "librewolf",
+            "epiphany",
+            "dconf",
+            "pulse",
+            "evolution",
+            "procps",
+            "BetterDiscord",
+            "Equicord",
+            "Vencord",
+            "legcord",
+            "vesktop",
+            "discord",
+            "slack",
+            "Claude",
+            "obsidian",
+            "zoom",
+            "teams",
+            "spotify",
+            "systemd",
+            "session",
+            "user-dirs.dirs",
+            "user-dirs.locale",
+            "mimeapps.list",
+            "monitors.xml",
+            "kdeglobals",
+            "kdenliverc",
+            "kiorc",
+            "trashrc",
+            "filetypesrc",
+            "baloofileinformationrc",
+            "dolphinrc",
+            "dolphin.kmessagebox",
+            "QtProject",
+            "QtProject.conf",
+            "fcitx",
+            "fcitx5",
+            "ibus",
+            "easyeffects",
+            "libreoffice",
+            "peazip",
+            "GIMP",
+            "audacity",
+            "Blackmagic Design",
+            "go",
+            "Kitware",
+            "rncbc.org",
+            "Softdeluxe",
+            "Unknown Organization",
+            "gtk-backup",
+            "pavucontrol.ini",
         ];
 
         let dot_config = self.home_dir.join(".config");
         if let Ok(entries) = fs::read_dir(&dot_config) {
             for entry in entries.flatten() {
                 if let Some(folder_name) = entry.file_name().to_str() {
-                    if copied_items.contains(folder_name) || folder_name.starts_with('.') {
+                    if copied_items.contains(folder_name)
+                        || folder_name.starts_with('.')
+                        || is_browser_dir(folder_name)
+                    {
                         continue;
                     }
                     let path = entry.path();
@@ -946,8 +1022,14 @@ impl App {
 
         // 3. User shell dotfiles in home
         for dotfile in [
-            ".zshrc", ".zshenv", ".zprofile", ".bashrc", ".bash_profile", ".bash_logout",
-            ".tmux.conf", ".gitconfig",
+            ".zshrc",
+            ".zshenv",
+            ".zprofile",
+            ".bashrc",
+            ".bash_profile",
+            ".bash_logout",
+            ".tmux.conf",
+            ".gitconfig",
         ] {
             if !copied_items.contains(dotfile) {
                 let live_path = self.home_dir.join(dotfile);
@@ -1059,28 +1141,139 @@ impl App {
             .status();
     }
 
-    /// Recursively search all configuration files in a directory for a keyword.
-    fn dir_mentions_recursive(dir: &Path, keyword: &str) -> bool {
+    /// Visit every non-comment line of the text files below `dir` (lowercased).
+    fn for_each_config_line(dir: &Path, depth: usize, f: &mut dyn FnMut(&str)) {
+        if depth > 8 {
+            return;
+        }
         let Ok(entries) = fs::read_dir(dir) else {
-            return false;
+            return;
         };
-        let needle = keyword.to_lowercase();
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                if Self::dir_mentions_recursive(&path, keyword) {
-                    return true;
-                }
-            } else if path.is_file() {
-                if let Ok(meta) = path.metadata() {
-                    if meta.len() < 2 * 1024 * 1024 {
-                        if let Ok(content) = fs::read_to_string(&path) {
-                            if content.to_lowercase().contains(&needle) {
-                                return true;
-                            }
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                Self::for_each_config_line(&path, depth + 1, f);
+            } else if meta.is_file() && meta.len() < 2 * 1024 * 1024 {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    for line in content.lines() {
+                        let line = line.trim().to_lowercase();
+                        if line.is_empty()
+                            || line.starts_with('#')
+                            || line.starts_with("//")
+                            || line.starts_with("--")
+                        {
+                            continue;
                         }
+                        f(&line);
                     }
                 }
+            }
+        }
+    }
+
+    /// True when `needle` appears in `line` as a whole word (so `qs` does not match `tags`).
+    fn line_has_word(line: &str, needle: &str) -> bool {
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let mut from = 0;
+        while let Some(pos) = line[from..].find(needle) {
+            let start = from + pos;
+            let end = start + needle.len();
+            let before_ok = !line[..start].chars().next_back().is_some_and(is_word);
+            let after_ok = !line[end..].chars().next().is_some_and(is_word);
+            if before_ok && after_ok {
+                return true;
+            }
+            from = start + needle.len().max(1);
+        }
+        false
+    }
+
+    /// Search active (non-comment) config lines for a keyword as a whole word.
+    fn dir_mentions_recursive(dir: &Path, keyword: &str) -> bool {
+        let needle = keyword.to_lowercase();
+        let mut found = false;
+        Self::for_each_config_line(dir, 0, &mut |line| {
+            found = found || Self::line_has_word(line, &needle);
+        });
+        found
+    }
+
+    /// Like `dir_mentions_recursive`, but only for lines that launch something.
+    fn dir_execs_recursive(dir: &Path, keyword: &str) -> bool {
+        let needle = keyword.to_lowercase();
+        let mut found = false;
+        Self::for_each_config_line(dir, 0, &mut |line| {
+            found = found
+                || ((line.contains("exec") || line.contains("spawn"))
+                    && Self::line_has_word(line, &needle));
+        });
+        found
+    }
+
+    /// Find `-c <name>` / `--config <name>` passed to quickshell (`qs`) in launch lines.
+    fn quickshell_config_from_hypr(dir: &Path) -> Option<String> {
+        let mut result = None;
+        Self::for_each_config_line(dir, 0, &mut |line| {
+            if result.is_some() || !(line.contains("exec") || line.contains("spawn")) {
+                return;
+            }
+            let tokens: Vec<&str> = line
+                .split(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | ',' | '(' | ')'))
+                .filter(|t| !t.is_empty())
+                .collect();
+            for (i, tok) in tokens.iter().enumerate() {
+                if matches!(*tok, "qs" | "quickshell") {
+                    let mut j = i + 1;
+                    while j + 1 < tokens.len() && tokens[j] != "-c" && tokens[j] != "--config" {
+                        if !tokens[j].starts_with('-') {
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if j + 1 < tokens.len() && (tokens[j] == "-c" || tokens[j] == "--config") {
+                        result = Some(tokens[j + 1].to_string());
+                        return;
+                    }
+                }
+            }
+        });
+        result
+    }
+
+    /// Decide how to launch quickshell for a profile: the config name for `-c`, if any.
+    fn quickshell_config_name(profile_path: &Path) -> Option<String> {
+        if let Some(name) = Self::quickshell_config_from_hypr(&profile_path.join("hypr")) {
+            return Some(name);
+        }
+        for module in ["quickshell", "qs"] {
+            let dir = profile_path.join(module);
+            if dir.join("shell.qml").is_file() {
+                return None; // default config; plain `qs` finds it
+            }
+            let named: Vec<String> = fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|e| e.path().join("shell.qml").is_file())
+                .filter_map(|e| e.file_name().to_str().map(String::from))
+                .collect();
+            if named.len() == 1 {
+                return Some(named[0].clone());
+            }
+        }
+        None
+    }
+
+    /// Launch a command detached and wait briefly to confirm one of `procs` is running.
+    fn start_checked(cmd: &str, procs: &[&str]) -> bool {
+        Self::spawn_detached(cmd);
+        for _ in 0..10 {
+            thread::sleep(Duration::from_millis(200));
+            if procs.iter().any(|p| Self::is_proc_alive(p)) {
+                return true;
             }
         }
         false
@@ -1088,10 +1281,11 @@ impl App {
 
     /// Live-reload Noctalia when possible, then try progressively simpler launches.
     fn reload_or_spawn_noctalia(&self) -> String {
-        if Self::is_proc_alive("noctalia") && Self::command_exists("noctalia") {
-            if Self::run_silent("noctalia", &["msg", "config-reload"]) {
-                return "noctalia msg config-reload".to_string();
-            }
+        if Self::is_proc_alive("noctalia")
+            && Self::command_exists("noctalia")
+            && Self::run_silent("noctalia", &["msg", "config-reload"])
+        {
+            return "noctalia msg config-reload".to_string();
         }
 
         if Self::command_exists("noctalia") {
@@ -1141,50 +1335,64 @@ impl App {
         let hypr_mentions = |keyword: &str| Self::dir_mentions_recursive(&hypr_dir, keyword);
 
         // 2. Identify Shell / Bar
+        // Quickshell is last: Noctalia and Caelestia are quickshell configs, and
+        // their launch lines mention `qs`/`quickshell` too.
         let candidate_shells = [
-            "waybar",
-            "ags",
             "noctalia",
             "caelestia",
-            "quickshell",
             "hyprpanel",
+            "ags",
             "ironbar",
             "eww",
+            "waybar",
             "sfwbar",
             "yambar",
             "polybar",
             "tint2",
+            "quickshell",
         ];
-
-        let mut wanted_shell = None;
-
-        // Check modules first
-        for &shell in &candidate_shells {
-            if has_module(shell)
-                || (shell == "noctalia" && has_module("noctalia-shell"))
-                || (shell == "caelestia" && has_module("calestia"))
-                || (shell == "quickshell" && has_module("qs"))
-            {
-                wanted_shell = Some(shell);
-                break;
+        let aliases = |shell: &str| -> Vec<&'static str> {
+            match shell {
+                "noctalia" => vec!["noctalia", "noctalia-shell"],
+                "caelestia" => vec!["caelestia", "calestia"],
+                "quickshell" => vec!["quickshell", "qs"],
+                "ags" => vec!["ags", "astal"],
+                "waybar" => vec!["waybar"],
+                "hyprpanel" => vec!["hyprpanel"],
+                "ironbar" => vec!["ironbar"],
+                "eww" => vec!["eww"],
+                "sfwbar" => vec!["sfwbar"],
+                "yambar" => vec!["yambar"],
+                "polybar" => vec!["polybar"],
+                _ => vec!["tint2"],
             }
-        }
+        };
 
-        // If no explicit shell module, check recursive mentions in hypr configs
-        if wanted_shell.is_none() {
-            for &shell in &candidate_shells {
-                if hypr_mentions(shell)
-                    || (shell == "noctalia" && hypr_mentions("noctalia-shell"))
-                    || (shell == "caelestia" && hypr_mentions("calestia"))
-                    || (shell == "quickshell" && hypr_mentions("qs"))
-                {
-                    wanted_shell = Some(shell);
-                    break;
-                }
-            }
-        }
+        // Prefer what the Hyprland config actually launches, then profile modules,
+        // then any mention at all.
+        let wanted_shell = candidate_shells
+            .iter()
+            .copied()
+            .find(|&sh| {
+                aliases(sh)
+                    .iter()
+                    .any(|a| Self::dir_execs_recursive(&hypr_dir, a))
+            })
+            .or_else(|| {
+                candidate_shells
+                    .iter()
+                    .copied()
+                    .find(|&sh| aliases(sh).iter().any(|a| has_module(a)))
+            })
+            .or_else(|| {
+                candidate_shells
+                    .iter()
+                    .copied()
+                    .find(|&sh| aliases(sh).iter().any(|a| hypr_mentions(a)))
+            });
 
-        // All managed desktop bar/shell processes
+        // Every process any shell/bar may run as. Quickshell-based shells show up as
+        // `quickshell` or `qs` depending on how they were launched.
         let all_bar_procs = [
             "waybar",
             "ags",
@@ -1202,19 +1410,18 @@ impl App {
             "tint2",
         ];
 
-        let mut procs_to_kill = Vec::new();
-        for &proc_name in &all_bar_procs {
-            let is_target = match wanted_shell {
-                Some("noctalia") => proc_name == "noctalia" || proc_name == "noctalia-shell",
-                Some("caelestia") => proc_name == "caelestia" || proc_name == "qs",
-                Some("quickshell") => proc_name == "quickshell" || proc_name == "qs",
-                Some(w) => proc_name == w,
-                None => false,
-            };
-            if !is_target {
-                procs_to_kill.push(proc_name);
-            }
-        }
+        // Processes of the wanted shell that can be reloaded in place; all others die.
+        // Quickshell-family shells are always restarted so the new config is loaded.
+        let keep: &[&str] = match wanted_shell {
+            Some("noctalia") => &["noctalia", "noctalia-shell"],
+            Some("waybar") => &["waybar"],
+            _ => &[],
+        };
+        let procs_to_kill: Vec<&str> = all_bar_procs
+            .iter()
+            .copied()
+            .filter(|p| !keep.contains(p))
+            .collect();
         Self::kill_and_wait(&procs_to_kill);
 
         if wanted_shell != Some("eww") && Self::command_exists("eww") {
@@ -1246,71 +1453,50 @@ impl App {
                 }
             }
             Some("caelestia") => {
-                if Self::command_exists("caelestia") {
-                    Self::spawn_detached("caelestia shell -d");
-                    actions.push("spawned caelestia".to_string());
+                let ok = if Self::command_exists("caelestia") {
+                    Self::start_checked("caelestia shell -d", &["quickshell", "qs"])
                 } else if Self::command_exists("qs") {
-                    Self::spawn_detached("qs -c caelestia");
-                    actions.push("spawned qs -c caelestia".to_string());
-                }
+                    Self::start_checked("qs -c caelestia", &["quickshell", "qs"])
+                } else {
+                    false
+                };
+                actions.push(if ok {
+                    "restarted caelestia".to_string()
+                } else {
+                    "failed to start caelestia".to_string()
+                });
             }
             Some("quickshell") => {
-                if Self::command_exists("quickshell") {
-                    Self::spawn_detached("quickshell");
-                    actions.push("spawned quickshell".to_string());
-                } else if Self::command_exists("qs") {
-                    Self::spawn_detached("qs");
-                    actions.push("spawned qs".to_string());
-                }
-            }
-            Some("hyprpanel") => {
-                if Self::command_exists("hyprpanel") {
-                    Self::spawn_detached("hyprpanel");
-                    actions.push("spawned hyprpanel".to_string());
-                }
-            }
-            Some("ironbar") => {
-                if Self::command_exists("ironbar") {
-                    Self::spawn_detached("ironbar");
-                    actions.push("spawned ironbar".to_string());
+                let bin = ["qs", "quickshell"]
+                    .into_iter()
+                    .find(|b| Self::command_exists(b));
+                match bin {
+                    Some(bin) => {
+                        let cmd = match Self::quickshell_config_name(&profile_path) {
+                            Some(name) => format!("{} -c {}", bin, name),
+                            None => bin.to_string(),
+                        };
+                        if Self::start_checked(&cmd, &["quickshell", "qs"]) {
+                            actions.push(format!("restarted {}", cmd));
+                        } else {
+                            actions.push(format!("failed to start `{}`", cmd));
+                        }
+                    }
+                    None => actions.push("quickshell not installed".to_string()),
                 }
             }
             Some("eww") => {
                 if Self::command_exists("eww") {
-                    if Self::is_proc_alive("eww") {
-                        Self::run_silent("eww", &["reload"]);
-                        actions.push("reloaded eww".to_string());
-                    } else {
-                        Self::spawn_detached("eww daemon");
-                        actions.push("spawned eww daemon".to_string());
-                    }
+                    Self::spawn_detached("eww daemon");
+                    actions.push("spawned eww daemon".to_string());
                 }
             }
-            Some("sfwbar") => {
-                if Self::command_exists("sfwbar") {
-                    Self::spawn_detached("sfwbar");
-                    actions.push("spawned sfwbar".to_string());
-                }
+            Some(other) if Self::command_exists(other) => {
+                Self::spawn_detached(other);
+                actions.push(format!("spawned {}", other));
             }
-            Some("yambar") => {
-                if Self::command_exists("yambar") {
-                    Self::spawn_detached("yambar");
-                    actions.push("spawned yambar".to_string());
-                }
-            }
-            Some("polybar") => {
-                if Self::command_exists("polybar") {
-                    Self::spawn_detached("polybar");
-                    actions.push("spawned polybar".to_string());
-                }
-            }
-            Some("tint2") => {
-                if Self::command_exists("tint2") {
-                    Self::spawn_detached("tint2");
-                    actions.push("spawned tint2".to_string());
-                }
-            }
-            _ => {}
+            Some(_) => {}
+            None => {}
         }
 
         // 3. Notification Daemons
@@ -1324,8 +1510,11 @@ impl App {
         }
 
         if let Some(wanted) = wanted_notif {
-            let notifs_to_kill: Vec<&str> =
-                notif_daemons.iter().copied().filter(|&d| d != wanted).collect();
+            let notifs_to_kill: Vec<&str> = notif_daemons
+                .iter()
+                .copied()
+                .filter(|&d| d != wanted)
+                .collect();
             Self::kill_and_wait(&notifs_to_kill);
 
             match wanted {
@@ -1369,11 +1558,9 @@ impl App {
                         actions.push("spawned fnott".to_string());
                     }
                 }
-                "wired" => {
-                    if Self::command_exists("wired") {
-                        Self::spawn_detached("wired");
-                        actions.push("spawned wired".to_string());
-                    }
+                "wired" if Self::command_exists("wired") => {
+                    Self::spawn_detached("wired");
+                    actions.push("spawned wired".to_string());
                 }
                 _ => {}
             }
@@ -1426,23 +1613,22 @@ impl App {
                         actions.push("stopped mpvpaper".to_string());
                     }
                 }
-                "swaybg" => {
-                    if Self::command_exists("swaybg") {
-                        Self::kill_and_wait(&["swaybg"]);
-                        Self::spawn_detached("swaybg");
-                        actions.push("spawned swaybg".to_string());
-                    }
+                "swaybg" if Self::command_exists("swaybg") => {
+                    Self::kill_and_wait(&["swaybg"]);
+                    Self::spawn_detached("swaybg");
+                    actions.push("spawned swaybg".to_string());
                 }
                 _ => {}
             }
         }
 
         // 5. OSD & Nightlight
-        if (has_module("swayosd") || hypr_mentions("swayosd")) && Self::command_exists("swayosd-server") {
-            if !Self::is_proc_alive("swayosd-server") {
-                Self::spawn_detached("swayosd-server");
-                actions.push("spawned swayosd-server".to_string());
-            }
+        if (has_module("swayosd") || hypr_mentions("swayosd"))
+            && Self::command_exists("swayosd-server")
+            && !Self::is_proc_alive("swayosd-server")
+        {
+            Self::spawn_detached("swayosd-server");
+            actions.push("spawned swayosd-server".to_string());
         }
 
         // 6. Terminals Hot-Reload
@@ -1454,7 +1640,10 @@ impl App {
             Self::run_silent("killall", &["-SIGUSR1", "foot"]);
             actions.push("reloaded foot".to_string());
         }
-        if has_module("alacritty") && Self::command_exists("alacritty") && Self::is_proc_alive("alacritty") {
+        if has_module("alacritty")
+            && Self::command_exists("alacritty")
+            && Self::is_proc_alive("alacritty")
+        {
             Self::run_silent("alacritty", &["msg", "config", "reload"]);
             actions.push("reloaded alacritty".to_string());
         }
@@ -1485,52 +1674,95 @@ impl App {
         let Some(profile_name) = self.selected_profile().cloned() else {
             return Ok(());
         };
-        let profile_path = self.base_dir.join("profiles").join(&profile_name);
+        self.apply_profile(&profile_name)
+    }
+
+    /// Pick a backup path that never overwrites an earlier backup.
+    fn unique_backup_path(backup_dir: &Path, store_name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut candidate = backup_dir.join(format!("{}_backup-{}", store_name, stamp));
+        let mut n = 1;
+        while fs::symlink_metadata(&candidate).is_ok() {
+            candidate = backup_dir.join(format!("{}_backup-{}-{}", store_name, stamp, n));
+            n += 1;
+        }
+        candidate
+    }
+
+    /// Re-link a profile's targets into the home directory and reload the desktop.
+    /// If linking fails part way, every change is rolled back.
+    fn apply_profile(&mut self, profile_name: &str) -> Result<()> {
+        let profile_path = self.base_dir.join("profiles").join(profile_name);
+        if !profile_path.is_dir() {
+            anyhow::bail!("profile '{}' does not exist", profile_name);
+        }
         let backup_dir = self.base_dir.join("backups");
         fs::create_dir_all(&backup_dir)?;
 
-        // 1. Clean up ALL symlinks in ~/.config and ~ that point to any hyprdeck profile
-        self.clean_profile_symlinks();
+        let removed_links = self.clean_profile_symlinks();
+        let mut created: Vec<PathBuf> = Vec::new();
+        // (original location, where it was moved to)
+        let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut replaced_links: Vec<(PathBuf, PathBuf)> = Vec::new();
 
-        // 2. Link targets of the selected profile
-        let profile_targets = self.get_profile_targets(&profile_name);
-        for target in &profile_targets {
-            let source = profile_path.join(&target.store_name);
-            let live_target = self.home_dir.join(&target.home_rel_path);
-
-            if !source.exists() && fs::symlink_metadata(&source).is_err() {
-                continue;
-            }
-
-            if let Some(parent) = live_target.parent() {
-                fs::create_dir_all(parent)?;
-            }
-
-            if let Ok(meta) = fs::symlink_metadata(&live_target) {
-                if meta.file_type().is_symlink() {
-                    fs::remove_file(&live_target)?;
-                } else if meta.is_dir() {
-                    let backup_target = backup_dir.join(format!("{}_backup", target.store_name));
-                    if backup_target.exists() {
-                        fs::remove_dir_all(&backup_target)?;
-                    }
-                    fs::rename(&live_target, &backup_target)?;
-                } else if meta.is_file() {
-                    let backup_target = backup_dir.join(format!("{}_backup", target.store_name));
-                    if backup_target.exists() {
-                        fs::remove_file(&backup_target)?;
-                    }
-                    fs::rename(&live_target, &backup_target)?;
+        let result: Result<()> = (|| {
+            for target in self.get_profile_targets(profile_name) {
+                if is_browser_dir(&target.store_name) {
+                    continue;
                 }
-            }
+                let source = profile_path.join(&target.store_name);
+                let live_target = self.home_dir.join(&target.home_rel_path);
 
-            symlink(&source, &live_target)?;
+                if fs::symlink_metadata(&source).is_err() {
+                    continue;
+                }
+                if let Some(parent) = live_target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+
+                if let Ok(meta) = fs::symlink_metadata(&live_target) {
+                    if meta.file_type().is_symlink() {
+                        let dest = fs::read_link(&live_target)?;
+                        fs::remove_file(&live_target)?;
+                        replaced_links.push((live_target.clone(), dest));
+                    } else {
+                        let backup = Self::unique_backup_path(&backup_dir, &target.store_name);
+                        fs::rename(&live_target, &backup)?;
+                        moved.push((live_target.clone(), backup));
+                    }
+                }
+
+                symlink(&source, &live_target)?;
+                created.push(live_target);
+            }
+            Ok(())
+        })();
+
+        if let Err(err) = result {
+            for link in created.iter().rev() {
+                let _ = fs::remove_file(link);
+            }
+            for (orig, backup) in moved.iter().rev() {
+                let _ = fs::rename(backup, orig);
+            }
+            for (link, dest) in replaced_links.iter().chain(removed_links.iter()) {
+                let _ = symlink(dest, link);
+            }
+            return Err(err.context(format!(
+                "switching to '{}' failed; previous setup restored",
+                profile_name
+            )));
         }
 
-        // 3. Reload ecosystem daemons according to the profile's configuration
-        self.reload_ecosystem_daemons(&profile_name);
+        // Unit tests must never signal or spawn real desktop processes.
+        if !cfg!(test) {
+            self.reload_ecosystem_daemons(profile_name);
+        }
 
-        self.active_profile = profile_name.clone();
+        self.active_profile = profile_name.to_string();
         self.status_msg = format!(
             "Switched to '{}' ({})!",
             profile_name, self.last_reload_summary
@@ -1585,7 +1817,61 @@ fn centered_rect_exact(width: u16, height: u16, r: Rect) -> Rect {
     }
 }
 
+const USAGE: &str = "hyprdeck - Hyprland profile and dotfile manager
+
+USAGE:
+    hyprdeck                 Open the interactive TUI
+    hyprdeck list            List profiles (active one is marked with *)
+    hyprdeck current         Print the active profile
+    hyprdeck switch <name>   Activate a profile and reload services
+    hyprdeck --version       Print the version
+    hyprdeck --help          Print this help";
+
+/// Handle non-interactive subcommands. Returns `Ok(true)` if one was handled.
+fn run_cli(args: &[String]) -> Result<bool> {
+    let Some(cmd) = args.first() else {
+        return Ok(false);
+    };
+    match cmd.as_str() {
+        "-h" | "--help" | "help" => println!("{}", USAGE),
+        "-V" | "--version" | "version" => println!("hyprdeck {}", env!("CARGO_PKG_VERSION")),
+        "list" => {
+            let app = App::new()?;
+            for p in &app.profiles {
+                let mark = if *p == app.active_profile { "*" } else { " " };
+                println!("{} {}", mark, p);
+            }
+        }
+        "current" => println!("{}", App::new()?.active_profile),
+        "switch" => {
+            let name = args.get(1).context("usage: hyprdeck switch <name>")?;
+            let mut app = App::new()?;
+            app.apply_profile(name)?;
+            println!("{}", app.status_msg);
+        }
+        other => anyhow::bail!("unknown command '{}'\n\n{}", other, USAGE),
+    }
+    Ok(true)
+}
+
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(stdout(), LeaveAlternateScreen);
+}
+
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if run_cli(&args)? {
+        return Ok(());
+    }
+
+    // Release builds abort on panic; put the terminal back first.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_hook(info);
+    }));
+
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -1593,8 +1879,7 @@ fn main() -> Result<()> {
     let mut app = App::new()?;
     let res = run_app(&mut terminal, &mut app);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    restore_terminal();
     terminal.show_cursor()?;
 
     if let Err(err) = res {
@@ -1636,23 +1921,19 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     KeyCode::Right | KeyCode::Char('l') => {
                         app.active_pane = ActivePane::Details;
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        match app.active_pane {
-                            ActivePane::Profiles => app.next(),
-                            ActivePane::Details => {
-                                let max_scroll = app.detail_lines_count.saturating_sub(5) as u16;
-                                app.detail_scroll = (app.detail_scroll + 1).min(max_scroll);
-                            }
+                    KeyCode::Down | KeyCode::Char('j') => match app.active_pane {
+                        ActivePane::Profiles => app.next(),
+                        ActivePane::Details => {
+                            let max_scroll = app.detail_lines_count.saturating_sub(5) as u16;
+                            app.detail_scroll = (app.detail_scroll + 1).min(max_scroll);
                         }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        match app.active_pane {
-                            ActivePane::Profiles => app.previous(),
-                            ActivePane::Details => {
-                                app.detail_scroll = app.detail_scroll.saturating_sub(1);
-                            }
+                    },
+                    KeyCode::Up | KeyCode::Char('k') => match app.active_pane {
+                        ActivePane::Profiles => app.previous(),
+                        ActivePane::Details => {
+                            app.detail_scroll = app.detail_scroll.saturating_sub(1);
                         }
-                    }
+                    },
                     KeyCode::PageDown | KeyCode::Char('J') => {
                         let max_scroll = app.detail_lines_count.saturating_sub(5) as u16;
                         app.detail_scroll = (app.detail_scroll + 5).min(max_scroll);
@@ -1660,36 +1941,33 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     KeyCode::PageUp | KeyCode::Char('K') => {
                         app.detail_scroll = app.detail_scroll.saturating_sub(5);
                     }
-                    KeyCode::Home | KeyCode::Char('g') => {
-                        match app.active_pane {
-                            ActivePane::Profiles => {
-                                if !app.filtered_indices.is_empty() {
-                                    app.state.select(Some(0));
-                                    app.detail_scroll = 0;
-                                }
-                            }
-                            ActivePane::Details => {
+                    KeyCode::Home | KeyCode::Char('g') => match app.active_pane {
+                        ActivePane::Profiles => {
+                            if !app.filtered_indices.is_empty() {
+                                app.state.select(Some(0));
                                 app.detail_scroll = 0;
                             }
                         }
-                    }
-                    KeyCode::End | KeyCode::Char('G') => {
-                        match app.active_pane {
-                            ActivePane::Profiles => {
-                                if !app.filtered_indices.is_empty() {
-                                    app.state.select(Some(app.filtered_indices.len() - 1));
-                                    app.detail_scroll = 0;
-                                }
-                            }
-                            ActivePane::Details => {
-                                let max_scroll = app.detail_lines_count.saturating_sub(5) as u16;
-                                app.detail_scroll = max_scroll;
+                        ActivePane::Details => {
+                            app.detail_scroll = 0;
+                        }
+                    },
+                    KeyCode::End | KeyCode::Char('G') => match app.active_pane {
+                        ActivePane::Profiles => {
+                            if !app.filtered_indices.is_empty() {
+                                app.state.select(Some(app.filtered_indices.len() - 1));
+                                app.detail_scroll = 0;
                             }
                         }
-                    }
+                        ActivePane::Details => {
+                            let max_scroll = app.detail_lines_count.saturating_sub(5) as u16;
+                            app.detail_scroll = max_scroll;
+                        }
+                    },
                     KeyCode::Char('/') => {
                         app.input_mode = InputMode::Filter;
-                        app.status_msg = String::from("Type to filter profiles... [Enter] confirm, [Esc] clear");
+                        app.status_msg =
+                            String::from("Type to filter profiles... [Enter] confirm, [Esc] clear");
                     }
                     KeyCode::Char('?') => {
                         app.input_mode = InputMode::Help;
@@ -1742,7 +2020,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         app.status_msg = format!(
                             "Filter applied ({} match{}). Press [Esc] to clear.",
                             app.filtered_indices.len(),
-                            if app.filtered_indices.len() == 1 { "" } else { "es" }
+                            if app.filtered_indices.len() == 1 {
+                                ""
+                            } else {
+                                "es"
+                            }
                         );
                     }
                     KeyCode::Esc => {
@@ -1871,18 +2153,34 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut left = vec![
         Span::raw(" "),
-        Span::styled("◈ ", Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "◈ ",
+            Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD),
+        ),
     ];
     left.extend(gradient("HYPRDECK", PURPLE_RGB, BLUE_RGB, true));
     left.push(Span::styled(" · ", Style::default().fg(C_DIM)));
-    left.push(Span::styled("Wayland Profile & Dotfile Engine", Style::default().fg(C_MUTED)));
+    left.push(Span::styled(
+        "Wayland Profile & Dotfile Engine",
+        Style::default().fg(C_MUTED),
+    ));
 
-    let managed = !app.active_profile.contains("External") && !app.active_profile.contains("None") && !app.active_profile.is_empty();
+    let managed = !app.active_profile.contains("External")
+        && !app.active_profile.contains("None")
+        && !app.active_profile.is_empty();
     let mut right = Vec::new();
 
     if managed {
-        right.push(Span::styled(" ● ACTIVE: ", Style::default().fg(C_OK).add_modifier(Modifier::BOLD)));
-        right.push(Span::styled(format!("{} ", app.active_profile), Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD)));
+        right.push(Span::styled(
+            " ● ACTIVE: ",
+            Style::default().fg(C_OK).add_modifier(Modifier::BOLD),
+        ));
+        right.push(Span::styled(
+            format!("{} ", app.active_profile),
+            Style::default()
+                .fg(C_TEXT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        ));
         right.push(Span::styled("│ ", Style::default().fg(C_DIM)));
     } else {
         right.push(Span::styled(" ○ UNMANAGED ", Style::default().fg(C_WARN)));
@@ -1937,7 +2235,10 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 fn render_profile_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.active_pane == ActivePane::Profiles;
     let (border_color, title_style) = if focused {
-        (C_BLUE, Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD))
+        (
+            C_BLUE,
+            Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD),
+        )
     } else {
         (C_BORDER_DIM, Style::default().fg(C_MUTED))
     };
@@ -1987,7 +2288,9 @@ fn render_profile_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 if app.filter_query.is_empty() {
                     Style::default().fg(C_DIM)
                 } else {
-                    Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(C_TEXT_BRIGHT)
+                        .add_modifier(Modifier::BOLD)
                 },
             ),
             if app.input_mode == InputMode::Filter {
@@ -2015,7 +2318,10 @@ fn render_profile_list(frame: &mut Frame, area: Rect, app: &mut App) {
         let empty_msg = if !app.filter_query.is_empty() {
             vec![
                 Line::from(""),
-                Line::from(Span::styled("  No matching profiles.", Style::default().fg(C_WARN))),
+                Line::from(Span::styled(
+                    "  No matching profiles.",
+                    Style::default().fg(C_WARN),
+                )),
                 Line::from(""),
                 Line::from(vec![
                     Span::raw("  "),
@@ -2026,7 +2332,10 @@ fn render_profile_list(frame: &mut Frame, area: Rect, app: &mut App) {
         } else {
             vec![
                 Line::from(""),
-                Line::from(Span::styled("  No profiles saved yet.", Style::default().fg(C_TEXT))),
+                Line::from(Span::styled(
+                    "  No profiles saved yet.",
+                    Style::default().fg(C_TEXT),
+                )),
                 Line::from(""),
                 Line::from(vec![
                     Span::raw("  "),
@@ -2053,13 +2362,18 @@ fn render_profile_list(frame: &mut Frame, area: Rect, app: &mut App) {
             let target_count = app.get_profile_targets(name).len();
 
             let (marker, marker_style) = if active {
-                (" ● ", Style::default().fg(C_OK).add_modifier(Modifier::BOLD))
+                (
+                    " ● ",
+                    Style::default().fg(C_OK).add_modifier(Modifier::BOLD),
+                )
             } else {
                 (" ○ ", Style::default().fg(C_DIM))
             };
 
             let name_style = if active {
-                Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(C_TEXT_BRIGHT)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(C_TEXT)
             };
@@ -2103,7 +2417,10 @@ fn render_details(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let (border_color, title_style) = if focused {
-        (C_PURPLE, Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD))
+        (
+            C_PURPLE,
+            Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD),
+        )
     } else {
         (C_BORDER_DIM, Style::default().fg(C_MUTED))
     };
@@ -2147,10 +2464,9 @@ fn render_details(frame: &mut Frame, area: Rect, app: &mut App) {
             .track_symbol(Some("│"))
             .thumb_symbol("█");
 
-        let mut scrollbar_state = ScrollbarState::new(
-            app.detail_lines_count.saturating_sub(inner.height as usize),
-        )
-        .position(app.detail_scroll as usize);
+        let mut scrollbar_state =
+            ScrollbarState::new(app.detail_lines_count.saturating_sub(inner.height as usize))
+                .position(app.detail_scroll as usize);
 
         frame.render_stateful_widget(
             scrollbar,
@@ -2235,7 +2551,10 @@ fn profile_details(app: &App, profile: &str) -> Vec<Line<'static>> {
             "  TRACKED CONFIGURATIONS & HEALTH",
             Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("  ·  {} components", targets.len()), Style::default().fg(C_DIM)),
+        Span::styled(
+            format!("  ·  {} components", targets.len()),
+            Style::default().fg(C_DIM),
+        ),
     ]));
 
     if targets.is_empty() {
@@ -2249,24 +2568,21 @@ fn profile_details(app: &App, profile: &str) -> Vec<Line<'static>> {
             let (status_badge, status_style) = match status {
                 LinkStatus::Active => (
                     " ✓ Active Link ",
-                    Style::default().fg(C_OK).bg(C_SLATE).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(C_OK)
+                        .bg(C_SLATE)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                LinkStatus::Other => (
-                    " ⇄ Other Link ",
-                    Style::default().fg(C_WARN).bg(C_SLATE),
-                ),
-                LinkStatus::Local => (
-                    " ○ Local Copy ",
-                    Style::default().fg(C_CYAN).bg(C_SLATE),
-                ),
+                LinkStatus::Other => (" ⇄ Other Link ", Style::default().fg(C_WARN).bg(C_SLATE)),
+                LinkStatus::Local => (" ○ Local Copy ", Style::default().fg(C_CYAN).bg(C_SLATE)),
                 LinkStatus::Broken => (
                     " ✖ Broken Link ",
-                    Style::default().fg(C_ERR).bg(C_SLATE).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(C_ERR)
+                        .bg(C_SLATE)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                LinkStatus::Missing => (
-                    " ○ Detached ",
-                    Style::default().fg(C_DIM).bg(C_SLATE),
-                ),
+                LinkStatus::Missing => (" ○ Detached ", Style::default().fg(C_DIM).bg(C_SLATE)),
             };
 
             let cat_style = match target.category {
@@ -2284,7 +2600,9 @@ fn profile_details(app: &App, profile: &str) -> Vec<Line<'static>> {
                 Span::styled("◈ ", Style::default().fg(C_BLUE)),
                 Span::styled(
                     format!("{:<15}", target.store_name),
-                    Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(C_TEXT_BRIGHT)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("{:<26}", format!("~/{}", target.home_rel_path)),
@@ -2316,19 +2634,39 @@ fn profile_details(app: &App, profile: &str) -> Vec<Line<'static>> {
     let mut daemons = Vec::new();
 
     if target_names.contains("hypr") {
-        daemons.push(("Hyprland", "hyprctl reload (smooth hot-reload without closing windows)"));
+        daemons.push((
+            "Hyprland",
+            "hyprctl reload (smooth hot-reload without closing windows)",
+        ));
     }
-    if target_names.iter().any(|n| n.contains("bar") || n.contains("shell") || n == "waybar" || n == "ags" || n == "quickshell") {
-        daemons.push(("Desktop Shell", "Live daemon signal reload / automatic respawn"));
+    if target_names.iter().any(|n| {
+        n.contains("bar") || n.contains("shell") || n == "waybar" || n == "ags" || n == "quickshell"
+    }) {
+        daemons.push((
+            "Desktop Shell",
+            "Live daemon signal reload / automatic respawn",
+        ));
     }
     if target_names.iter().any(|n| n == "kitty" || n == "foot") {
         daemons.push(("Terminal", "SIGUSR1 real-time config & color-scheme reload"));
     }
-    if target_names.iter().any(|n| n == "swaync" || n == "dunst" || n == "mako") {
-        daemons.push(("Notifications", "Reload daemon style and notification server"));
+    if target_names
+        .iter()
+        .any(|n| n == "swaync" || n == "dunst" || n == "mako")
+    {
+        daemons.push((
+            "Notifications",
+            "Reload daemon style and notification server",
+        ));
     }
-    if target_names.iter().any(|n| n == "wal" || n == "wallust" || n == "matugen") {
-        daemons.push(("Palette / Theme", "Apply dynamically generated color schemes"));
+    if target_names
+        .iter()
+        .any(|n| n == "wal" || n == "wallust" || n == "matugen")
+    {
+        daemons.push((
+            "Palette / Theme",
+            "Apply dynamically generated color schemes",
+        ));
     }
 
     if daemons.is_empty() {
@@ -2341,7 +2679,10 @@ fn profile_details(app: &App, profile: &str) -> Vec<Line<'static>> {
             lines.push(Line::from(vec![
                 Span::raw("   "),
                 Span::styled("❯ ", Style::default().fg(C_BLUE)),
-                Span::styled(format!("{:<16}", daemon), Style::default().fg(C_TEXT_BRIGHT)),
+                Span::styled(
+                    format!("{:<16}", daemon),
+                    Style::default().fg(C_TEXT_BRIGHT),
+                ),
                 Span::styled(action, Style::default().fg(C_MUTED)),
             ]));
         }
@@ -2350,12 +2691,24 @@ fn profile_details(app: &App, profile: &str) -> Vec<Line<'static>> {
     // Hook status
     lines.push(Line::from(vec![
         Span::raw("   "),
-        Span::styled("❯ ", Style::default().fg(if has_hook { C_OK } else { C_DIM })),
-        Span::styled(format!("{:<16}", "Custom Hook"), Style::default().fg(if has_hook { C_OK } else { C_MUTED })),
+        Span::styled(
+            "❯ ",
+            Style::default().fg(if has_hook { C_OK } else { C_DIM }),
+        ),
+        Span::styled(
+            format!("{:<16}", "Custom Hook"),
+            Style::default().fg(if has_hook { C_OK } else { C_MUTED }),
+        ),
         if has_hook {
-            Span::styled("reload.sh detected (will execute automatically after daemons)", Style::default().fg(C_OK))
+            Span::styled(
+                "reload.sh detected (will execute automatically after daemons)",
+                Style::default().fg(C_OK),
+            )
         } else {
-            Span::styled("none (optional: create reload.sh in profile to run custom scripts)", Style::default().fg(C_DIM))
+            Span::styled(
+                "none (optional: create reload.sh in profile to run custom scripts)",
+                Style::default().fg(C_DIM),
+            )
         },
     ]));
 
@@ -2384,13 +2737,31 @@ fn profile_details(app: &App, profile: &str) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled(" [ Enter ] ", Style::default().fg(C_BLUE).bg(C_SLATE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [ Enter ] ",
+            Style::default()
+                .fg(C_BLUE)
+                .bg(C_SLATE)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" Activate & hot-reload", Style::default().fg(C_MUTED)),
         Span::raw("    "),
-        Span::styled(" [ o ] ", Style::default().fg(C_PURPLE).bg(C_SLATE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [ o ] ",
+            Style::default()
+                .fg(C_PURPLE)
+                .bg(C_SLATE)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" Open folder", Style::default().fg(C_MUTED)),
         Span::raw("    "),
-        Span::styled(" [ r ] ", Style::default().fg(C_CYAN).bg(C_SLATE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [ r ] ",
+            Style::default()
+                .fg(C_CYAN)
+                .bg(C_SLATE)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" Force reload", Style::default().fg(C_MUTED)),
     ]));
     lines.push(Line::from(""));
@@ -2438,16 +2809,44 @@ fn welcome_details(app: &App, width: usize) -> Vec<Line<'static>> {
 
     lines.push(Line::from(vec![
         Span::raw("   "),
-        Span::styled(" [ s ] ", Style::default().fg(C_BLUE).bg(C_SLATE).add_modifier(Modifier::BOLD)),
-        Span::styled(" Snapshot Live Setup  ", Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD)),
-        Span::styled("Capture active ~/.config and dotfiles into a new profile", Style::default().fg(C_MUTED)),
+        Span::styled(
+            " [ s ] ",
+            Style::default()
+                .fg(C_BLUE)
+                .bg(C_SLATE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " Snapshot Live Setup  ",
+            Style::default()
+                .fg(C_TEXT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Capture active ~/.config and dotfiles into a new profile",
+            Style::default().fg(C_MUTED),
+        ),
     ]));
 
     lines.push(Line::from(vec![
         Span::raw("   "),
-        Span::styled(" [ i ] ", Style::default().fg(C_PURPLE).bg(C_SLATE).add_modifier(Modifier::BOLD)),
-        Span::styled(" Import Dotfiles       ", Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD)),
-        Span::styled("Import existing repository or folder (e.g. ~/dotfiles)", Style::default().fg(C_MUTED)),
+        Span::styled(
+            " [ i ] ",
+            Style::default()
+                .fg(C_PURPLE)
+                .bg(C_SLATE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " Import Dotfiles       ",
+            Style::default()
+                .fg(C_TEXT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Import existing repository or folder (e.g. ~/dotfiles)",
+            Style::default().fg(C_MUTED),
+        ),
     ]));
 
     lines.push(Line::from(""));
@@ -2462,7 +2861,10 @@ fn welcome_details(app: &App, width: usize) -> Vec<Line<'static>> {
             "  DETECTED ECOSYSTEM ON HOST",
             Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  ·  configurations ready to snapshot", Style::default().fg(C_DIM)),
+        Span::styled(
+            "  ·  configurations ready to snapshot",
+            Style::default().fg(C_DIM),
+        ),
     ]));
 
     let common_checks = [
@@ -2487,7 +2889,10 @@ fn welcome_details(app: &App, width: usize) -> Vec<Line<'static>> {
                 Span::raw("   "),
                 Span::styled("✓ ", Style::default().fg(C_OK)),
                 Span::styled(format!("{:<15}", name), Style::default().fg(C_TEXT_BRIGHT)),
-                Span::styled(format!("{:<26}", format!("~/{}", rel_path)), Style::default().fg(C_MUTED)),
+                Span::styled(
+                    format!("{:<26}", format!("~/{}", rel_path)),
+                    Style::default().fg(C_MUTED),
+                ),
                 Span::styled(cat, Style::default().fg(C_DIM)),
             ]));
         }
@@ -2562,7 +2967,9 @@ fn render_snapshot_modal(frame: &mut Frame, app: &App) {
             Span::styled(" 󰁤 ", Style::default().fg(C_BLUE)),
             Span::styled(
                 "Create Profile Snapshot ",
-                Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_TEXT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
 
@@ -2597,7 +3004,9 @@ fn render_snapshot_modal(frame: &mut Frame, app: &App) {
             Span::styled(" ❯ ", Style::default().fg(C_BLUE)),
             Span::styled(
                 app.input_buffer.clone(),
-                Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_TEXT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("█", Style::default().fg(C_CYAN)),
         ])),
@@ -2616,7 +3025,10 @@ fn render_snapshot_modal(frame: &mut Frame, app: &App) {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " [↵] Save Snapshot ",
-                Style::default().fg(C_BLUE).bg(C_SLATE).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_BLUE)
+                    .bg(C_SLATE)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("    "),
             Span::styled(" [Esc] Cancel ", Style::default().fg(C_MUTED).bg(C_SLATE)),
@@ -2638,7 +3050,9 @@ fn render_import_path_modal(frame: &mut Frame, app: &App) {
             Span::styled(" 󰋚 ", Style::default().fg(C_PURPLE)),
             Span::styled(
                 "Import Dotfiles · Step 1/2 ",
-                Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_TEXT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
 
@@ -2673,7 +3087,9 @@ fn render_import_path_modal(frame: &mut Frame, app: &App) {
             Span::styled(" ❯ ", Style::default().fg(C_PURPLE)),
             Span::styled(
                 app.input_buffer.clone(),
-                Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_TEXT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("█", Style::default().fg(C_CYAN)),
         ])),
@@ -2684,7 +3100,10 @@ fn render_import_path_modal(frame: &mut Frame, app: &App) {
     let validation = if expanded.exists() && expanded.is_dir() {
         Line::from(vec![
             Span::styled(" ● Directory exists: ", Style::default().fg(C_OK)),
-            Span::styled(compact_path(&expanded, &app.home_dir), Style::default().fg(C_TEXT)),
+            Span::styled(
+                compact_path(&expanded, &app.home_dir),
+                Style::default().fg(C_TEXT),
+            ),
         ])
     } else {
         Line::from(Span::styled(
@@ -2698,7 +3117,10 @@ fn render_import_path_modal(frame: &mut Frame, app: &App) {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " [↵] Next Step ",
-                Style::default().fg(C_PURPLE).bg(C_SLATE).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_PURPLE)
+                    .bg(C_SLATE)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("    "),
             Span::styled(" [Esc] Cancel ", Style::default().fg(C_MUTED).bg(C_SLATE)),
@@ -2720,7 +3142,9 @@ fn render_import_name_modal(frame: &mut Frame, app: &App) {
             Span::styled(" 󰋚 ", Style::default().fg(C_PURPLE)),
             Span::styled(
                 "Import Dotfiles · Step 2/2 ",
-                Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_TEXT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
 
@@ -2755,7 +3179,9 @@ fn render_import_name_modal(frame: &mut Frame, app: &App) {
             Span::styled(" ❯ ", Style::default().fg(C_PURPLE)),
             Span::styled(
                 app.input_buffer.clone(),
-                Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_TEXT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("█", Style::default().fg(C_CYAN)),
         ])),
@@ -2765,7 +3191,10 @@ fn render_import_name_modal(frame: &mut Frame, app: &App) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Source: ", Style::default().fg(C_DIM)),
-            Span::styled(compact_path(&app.pending_import_path, &app.home_dir), Style::default().fg(C_MUTED)),
+            Span::styled(
+                compact_path(&app.pending_import_path, &app.home_dir),
+                Style::default().fg(C_MUTED),
+            ),
         ])),
         chunks[2],
     );
@@ -2774,7 +3203,10 @@ fn render_import_name_modal(frame: &mut Frame, app: &App) {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " [↵] Finish Import ",
-                Style::default().fg(C_PURPLE).bg(C_SLATE).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_PURPLE)
+                    .bg(C_SLATE)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("    "),
             Span::styled(" [Esc] Cancel ", Style::default().fg(C_MUTED).bg(C_SLATE)),
@@ -2794,13 +3226,19 @@ fn render_delete_modal(frame: &mut Frame, app: &App) {
         .border_style(Style::default().fg(C_ERR).add_modifier(Modifier::BOLD))
         .title(Line::from(vec![
             Span::styled(" 󰆴 ", Style::default().fg(C_ERR)),
-            Span::styled("Confirm Delete ", Style::default().fg(C_ERR).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Confirm Delete ",
+                Style::default().fg(C_ERR).add_modifier(Modifier::BOLD),
+            ),
         ]));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let name = app.selected_profile().cloned().unwrap_or_else(|| "profile".to_string());
+    let name = app
+        .selected_profile()
+        .cloned()
+        .unwrap_or_else(|| "profile".to_string());
 
     let chunks = Layout::vertical([
         Constraint::Length(2),
@@ -2811,10 +3249,16 @@ fn render_delete_modal(frame: &mut Frame, app: &App) {
 
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled("Are you sure you want to permanently delete profile:", Style::default().fg(C_TEXT))),
+            Line::from(Span::styled(
+                "Are you sure you want to permanently delete profile:",
+                Style::default().fg(C_TEXT),
+            )),
             Line::from(vec![
                 Span::raw("  ● "),
-                Span::styled(name, Style::default().fg(C_ERR).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    name,
+                    Style::default().fg(C_ERR).add_modifier(Modifier::BOLD),
+                ),
             ]),
         ]),
         chunks[0],
@@ -2830,10 +3274,20 @@ fn render_delete_modal(frame: &mut Frame, app: &App) {
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" [y] Confirm Delete ", Style::default().fg(Color::Rgb(0x18, 0x18, 0x24)).bg(C_ERR).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " [y] Confirm Delete ",
+                Style::default()
+                    .fg(Color::Rgb(0x18, 0x18, 0x24))
+                    .bg(C_ERR)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("    "),
-            Span::styled(" [n / Esc] Cancel ", Style::default().fg(C_TEXT_BRIGHT).bg(C_SLATE)),
-        ])).alignment(Alignment::Right),
+            Span::styled(
+                " [n / Esc] Cancel ",
+                Style::default().fg(C_TEXT_BRIGHT).bg(C_SLATE),
+            ),
+        ]))
+        .alignment(Alignment::Right),
         chunks[2],
     );
 }
@@ -2850,27 +3304,25 @@ fn render_help_modal(frame: &mut Frame, _app: &App) {
             Span::styled(" 󰋖 ", Style::default().fg(C_BLUE)),
             Span::styled(
                 "Hyprdeck Cheatsheet & Keyboard Shortcuts ",
-                Style::default().fg(C_TEXT_BRIGHT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_TEXT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .split(inner);
+    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
 
-    let help_cols = Layout::horizontal([
-        Constraint::Ratio(1, 2),
-        Constraint::Ratio(1, 2),
-    ])
-    .split(rows[0]);
+    let help_cols =
+        Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(rows[0]);
 
     let nav_and_actions = vec![
-        Line::from(Span::styled("NAVIGATION", Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "NAVIGATION",
+            Style::default().fg(C_BLUE).add_modifier(Modifier::BOLD),
+        )),
         Line::from(vec![
             Span::styled("  ↑ / k           ", Style::default().fg(C_CYAN)),
             Span::styled("Previous profile / scroll up", Style::default().fg(C_TEXT)),
@@ -2881,7 +3333,10 @@ fn render_help_modal(frame: &mut Frame, _app: &App) {
         ]),
         Line::from(vec![
             Span::styled("  Tab / ← / →     ", Style::default().fg(C_CYAN)),
-            Span::styled("Switch pane (Profiles / Details)", Style::default().fg(C_TEXT)),
+            Span::styled(
+                "Switch pane (Profiles / Details)",
+                Style::default().fg(C_TEXT),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  PgUp / PgDn     ", Style::default().fg(C_CYAN)),
@@ -2892,7 +3347,10 @@ fn render_help_modal(frame: &mut Frame, _app: &App) {
             Span::styled("Jump to top / bottom", Style::default().fg(C_TEXT)),
         ]),
         Line::from(""),
-        Line::from(Span::styled("PROFILE ACTIONS", Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "PROFILE ACTIONS",
+            Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD),
+        )),
         Line::from(vec![
             Span::styled("  Enter           ", Style::default().fg(C_PURPLE)),
             Span::styled("Activate & hot-reload daemons", Style::default().fg(C_TEXT)),
@@ -2904,10 +3362,16 @@ fn render_help_modal(frame: &mut Frame, _app: &App) {
     ];
 
     let actions_and_tools = vec![
-        Line::from(Span::styled("MANAGEMENT", Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "MANAGEMENT",
+            Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD),
+        )),
         Line::from(vec![
             Span::styled("  i               ", Style::default().fg(C_PURPLE)),
-            Span::styled("Import external dotfiles directory", Style::default().fg(C_TEXT)),
+            Span::styled(
+                "Import external dotfiles directory",
+                Style::default().fg(C_TEXT),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  d               ", Style::default().fg(C_PURPLE)),
@@ -2915,17 +3379,26 @@ fn render_help_modal(frame: &mut Frame, _app: &App) {
         ]),
         Line::from(vec![
             Span::styled("  r               ", Style::default().fg(C_PURPLE)),
-            Span::styled("Force-reload ecosystem daemons", Style::default().fg(C_TEXT)),
+            Span::styled(
+                "Force-reload ecosystem daemons",
+                Style::default().fg(C_TEXT),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  o               ", Style::default().fg(C_PURPLE)),
             Span::styled("Open folder in file manager", Style::default().fg(C_TEXT)),
         ]),
         Line::from(""),
-        Line::from(Span::styled("SEARCH & APPLICATION", Style::default().fg(C_OK).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "SEARCH & APPLICATION",
+            Style::default().fg(C_OK).add_modifier(Modifier::BOLD),
+        )),
         Line::from(vec![
             Span::styled("  /               ", Style::default().fg(C_OK)),
-            Span::styled("Search & filter profiles in real-time", Style::default().fg(C_TEXT)),
+            Span::styled(
+                "Search & filter profiles in real-time",
+                Style::default().fg(C_TEXT),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  ?               ", Style::default().fg(C_OK)),
@@ -2941,9 +3414,14 @@ fn render_help_modal(frame: &mut Frame, _app: &App) {
     frame.render_widget(Paragraph::new(actions_and_tools), help_cols[1]);
 
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" Press [Esc] or [?] to close ", Style::default().fg(C_TEXT_BRIGHT).bg(C_SLATE).add_modifier(Modifier::BOLD)),
-        ])).alignment(Alignment::Center),
+        Paragraph::new(Line::from(vec![Span::styled(
+            " Press [Esc] or [?] to close ",
+            Style::default()
+                .fg(C_TEXT_BRIGHT)
+                .bg(C_SLATE)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(Alignment::Center),
         rows[1],
     );
 }
@@ -3189,5 +3667,152 @@ mod tests {
         let mut terminal_small = Terminal::new(backend_small).unwrap();
         app.input_mode = InputMode::Normal;
         terminal_small.draw(|f| ui(f, &mut app)).unwrap();
+    }
+
+    fn temp_app(tag: &str) -> App {
+        let root = std::env::temp_dir().join(format!("hyprdeck_{}_{}", tag, std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let home = root.join("home");
+        fs::create_dir_all(home.join(".config")).unwrap();
+        let base = home.join(".hyprdeck");
+        fs::create_dir_all(base.join("profiles")).unwrap();
+        App {
+            profiles: Vec::new(),
+            state: ListState::default(),
+            active_profile: String::new(),
+            status_msg: String::new(),
+            last_reload_summary: String::new(),
+            base_dir: base,
+            home_dir: home,
+            known_targets: App::build_ecosystem_registry(),
+            input_mode: InputMode::Normal,
+            input_buffer: String::new(),
+            pending_import_path: PathBuf::new(),
+            detail_scroll: 0,
+            detail_lines_count: 0,
+            active_pane: ActivePane::Profiles,
+            filter_query: String::new(),
+            filtered_indices: Vec::new(),
+        }
+    }
+
+    fn write(path: &Path, text: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn test_line_has_word_is_boundary_aware() {
+        assert!(App::line_has_word("exec-once = qs -c x", "qs"));
+        assert!(!App::line_has_word("exec = tags --flags", "qs"));
+        assert!(!App::line_has_word("wallust run", "wal"));
+        assert!(App::line_has_word("exec-once = wal -r", "wal"));
+        assert!(App::line_has_word("spawn noctalia-shell", "noctalia"));
+    }
+
+    #[test]
+    fn test_comments_do_not_count_as_mentions() {
+        let app = temp_app("comments");
+        let dir = app.base_dir.join("hypr");
+        write(
+            &dir.join("a.conf"),
+            "# exec-once = waybar\n-- hl.exec_cmd('eww')\n",
+        );
+        assert!(!App::dir_mentions_recursive(&dir, "waybar"));
+        assert!(!App::dir_mentions_recursive(&dir, "eww"));
+        let _ = fs::remove_dir_all(app.home_dir.parent().unwrap());
+    }
+
+    #[test]
+    fn test_quickshell_config_name_resolution() {
+        let app = temp_app("qsname");
+        let prof = app.base_dir.join("profiles/p");
+
+        // Named config referenced from the Hyprland config.
+        write(
+            &prof.join("hypr/hyprland.conf"),
+            "exec-once = qs -c mybar\n",
+        );
+        assert_eq!(App::quickshell_config_name(&prof), Some("mybar".into()));
+
+        // No -c: a single named config dir is used.
+        write(&prof.join("hypr/hyprland.conf"), "exec-once = qs\n");
+        write(&prof.join("quickshell/ii/shell.qml"), "");
+        assert_eq!(App::quickshell_config_name(&prof), Some("ii".into()));
+
+        // Default config at the module root: plain `qs`.
+        write(&prof.join("quickshell/shell.qml"), "");
+        assert_eq!(App::quickshell_config_name(&prof), None);
+        let _ = fs::remove_dir_all(app.home_dir.parent().unwrap());
+    }
+
+    #[test]
+    fn test_apply_profile_switches_links_and_keeps_every_backup() {
+        let mut app = temp_app("apply");
+        let profiles = app.base_dir.join("profiles");
+        write(&profiles.join("a/waybar/config"), "a");
+        write(&profiles.join("b/waybar/config"), "b");
+
+        // Pre-existing unmanaged config.
+        write(&app.home_dir.join(".config/waybar/config"), "mine");
+
+        app.apply_profile("a").unwrap();
+        let live = app.home_dir.join(".config/waybar");
+        assert_eq!(fs::read_link(&live).unwrap(), profiles.join("a/waybar"));
+
+        app.apply_profile("b").unwrap();
+        assert_eq!(fs::read_link(&live).unwrap(), profiles.join("b/waybar"));
+
+        // The original config must still be on disk after switching twice.
+        let backups: Vec<_> = fs::read_dir(app.base_dir.join("backups"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            fs::read_to_string(backups[0].path().join("config")).unwrap(),
+            "mine"
+        );
+
+        // An unmanaged config appearing again is backed up without clobbering the first.
+        fs::remove_file(&live).unwrap();
+        write(&live.join("config"), "mine2");
+        app.apply_profile("a").unwrap();
+        assert_eq!(
+            fs::read_dir(app.base_dir.join("backups")).unwrap().count(),
+            2
+        );
+        let _ = fs::remove_dir_all(app.home_dir.parent().unwrap());
+    }
+
+    #[test]
+    fn test_apply_profile_rolls_back_on_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut app = temp_app("rollback");
+        let profiles = app.base_dir.join("profiles");
+        write(&profiles.join("a/waybar/config"), "a");
+        write(&profiles.join("b/alacritty/alacritty.toml"), "b");
+        write(&profiles.join("b/waybar/config"), "b");
+        app.apply_profile("a").unwrap();
+
+        // Unmanaged waybar config that must be backed up, but backups/ is read-only.
+        let live_waybar = app.home_dir.join(".config/waybar");
+        fs::remove_file(&live_waybar).unwrap();
+        write(&live_waybar.join("config"), "mine");
+        let backups = app.base_dir.join("backups");
+        fs::set_permissions(&backups, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let res = app.apply_profile("b");
+        fs::set_permissions(&backups, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(res.is_err());
+        // alacritty was linked before the failure and must be undone; waybar untouched.
+        assert!(fs::symlink_metadata(app.home_dir.join(".config/alacritty")).is_err());
+        assert_eq!(
+            fs::read_to_string(live_waybar.join("config")).unwrap(),
+            "mine"
+        );
+        let _ = fs::remove_dir_all(app.home_dir.parent().unwrap());
     }
 }
